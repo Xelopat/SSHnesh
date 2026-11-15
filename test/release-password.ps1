@@ -37,7 +37,7 @@ $exe = Get-ChildItem -LiteralPath $package -Filter SSHnesh.exe -Recurse | Select
 $launch = @{
     FilePath = $exe.FullName
     WorkingDirectory = $scratch
-    ArgumentList = ('--user-data-dir="' + $profile + '"')
+    ArgumentList = ('--force-renderer-accessibility --user-data-dir="' + $profile + '"')
     PassThru = $true
 }
 $app = Start-Process @launch
