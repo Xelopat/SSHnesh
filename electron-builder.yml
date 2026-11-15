@@ -1,0 +1,25 @@
+appId: local.sshash.desktop
+productName: SSHnesh
+asar: true
+npmRebuild: false
+directories:
+  output: dist
+files:
+  - src/**/*.cjs
+  - src/ui/index.html
+  - build/ui.js
+  - build/ui.css
+  - package.json
+extraResources:
+  - from: build/sshash-mcp.cjs
+    to: sshash-mcp.cjs
+win:
+  target:
+    - target: zip
+      arch: x64
+  signAndEditExecutable: false
+  extraResources:
+    - from: build/bridge/sshash-pipe.exe
+      to: bridge/sshash-pipe.exe
+linux:
+  target: AppImage

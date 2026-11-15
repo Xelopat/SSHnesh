@@ -1,0 +1,7 @@
+node_modules/
+build/
+dist/
+bridge/bin/
+bridge/obj/
+test-artifacts/
+*.log
