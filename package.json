@@ -5,6 +5,7 @@
   "main": "src/main.cjs",
   "scripts": {
     "test": "node --test test/access.test.cjs",
+    "test:sync": "node --test test/sync.test.cjs",
     "build": "node scripts/build.cjs",
     "start": "npm run build && electron .",
     "test:e2e": "node test/e2e.cjs",

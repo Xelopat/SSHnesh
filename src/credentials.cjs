@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { BaseAgent, utils } = require('ssh2');
 
 async function askSecret(helper, title, signal, owner) {
@@ -48,6 +49,43 @@ class Credentials {
     if (!this.encryption.available()) throw Error('Разблокируйте системное хранилище и повторите.');
     try { return Buffer.from(this.encryption.decrypt(Buffer.from(cipher, 'base64')), 'base64'); }
     catch { throw Error('Не удалось открыть хранилище текущего пользователя. Задайте пароль или импортируйте ключ заново.'); }
+  }
+
+  exportSync() {
+    const read = cipher => {
+      const bytes = this.#open(cipher);
+      try { return bytes.toString('base64'); }
+      finally { bytes.fill(0); }
+    };
+    return {
+      keys: Object.fromEntries(Object.entries(this.store.data.keys).map(([id, { cipher, ...key }]) =>
+        [id, { ...key, secret: read(cipher) }])),
+      passwords: Object.fromEntries(Object.entries(this.store.data.passwords).map(([id, { cipher, target }]) =>
+        [id, { target, secret: read(cipher) }])),
+    };
+  }
+
+  importSync(secrets, current) {
+    const seal = secret => {
+      const bytes = Buffer.from(secret, 'base64');
+      try { return this.#seal(bytes); }
+      finally { bytes.fill(0); }
+    };
+    return {
+      keys: Object.fromEntries(Object.entries(secrets.keys).map(([id, { secret, ...key }]) =>
+        [id, isDeepStrictEqual(secrets.keys[id], current.keys[id]) ? this.store.data.keys[id] :
+          { ...key, cipher: seal(secret) }])),
+      passwords: Object.fromEntries(Object.entries(secrets.passwords).map(([id, { secret, target }]) =>
+        [id, isDeepStrictEqual(secrets.passwords[id], current.passwords[id]) ? this.store.data.passwords[id] :
+          { target, cipher: seal(secret) }])),
+    };
+  }
+
+  refreshAfterSync(previous) {
+    for (const id of this.#keys.keys())
+      if (previous.keys[id]?.cipher !== this.store.data.keys[id]?.cipher) this.#keys.delete(id);
+    for (const id of this.#passwords.keys())
+      if (previous.passwords[id]?.cipher !== this.store.data.passwords[id]?.cipher) this.#clearPassword(id);
   }
 
   list() {

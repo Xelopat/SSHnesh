@@ -64,10 +64,10 @@ try {
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
     & "$PSScriptRoot/secret-dialog.ps1" -Mode accept -AppPid $app.Id
 
-    $vault = Join-Path $profile 'credentials.json'
+    $vault = Join-Path $profile 'workspace.json'
     $path = Wait-For { if (Test-Path -LiteralPath $vault) { $vault } } 'saved password'
     $json = Get-Content -LiteralPath $path -Raw
-    $entries = @(($json | ConvertFrom-Json).passwords.PSObject.Properties)
+    $entries = @(($json | ConvertFrom-Json).vault.passwords.PSObject.Properties)
     if ($entries.Count -ne 1 -or !$entries[0].Value.cipher -or $json.Contains('synthetic-secret')) {
         throw 'The release did not save the password as an encrypted record.'
     }

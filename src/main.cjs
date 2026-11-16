@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, clipboard, safeStorage, protocol, net, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, session, clipboard, safeStorage, protocol, net, dialog, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -7,9 +7,10 @@ const { isIP } = require('node:net');
 const { z } = require('zod/v4');
 const { Sessions, target } = require('./sessions.cjs');
 const credentialsApi = require('./credentials.cjs');
-const { Access } = require('./access.cjs');
+const { Access, defaultApprovalMode } = require('./access.cjs');
 const { startLocal } = require('./local.cjs');
 const { fileRoutes } = require('./files.cjs');
+const { Sync, checkpointSchema } = require('./sync.cjs');
 const { nonce, valid } = require('./wire.cjs');
 
 const home = 'sshash://app/index.html';
@@ -33,11 +34,12 @@ const profile = z.strictObject({
 });
 
 function storage(file, initial, parse) {
-  let data = initial;
+  let data;
   try {
     data = parse(JSON.parse(fs.readFileSync(file, 'utf8')));
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
+    data = typeof initial === 'function' ? initial() : initial;
   }
   return {
     get data() { return data; },
@@ -86,22 +88,62 @@ if (primary) app.whenReady().then(() => {
 
   const userData = app.getPath('userData');
   fs.mkdirSync(userData, { recursive: true, mode: 0o700 });
-  const store = storage(path.join(userData, 'servers.json'), { hosts: [], hostKeys: {} },
-    data => z.object({ hosts: z.array(profile.extend({ id: z.uuid() })), hostKeys: z.record(z.string(), z.string()) }).parse(data));
+  const hosts = z.array(profile.extend({ id: z.uuid() })).max(256);
+  const serverSchema = z.object({ hosts, hostKeys: z.record(z.string(), z.string()) });
+  const approvalMode = z.enum(['manual', 'all']);
+  const settingsSchema = z.object({ approvalMode: approvalMode.default(defaultApprovalMode) });
+  const settings = storage(path.join(userData, 'settings.json'), settingsSchema.parse({}),
+    data => settingsSchema.parse(data));
+  const keyIdSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+  const privateKey = z.object({ id: keyIdSchema, name: z.string().max(120), type: z.string(),
+    publicBlob: z.base64(), protected: z.boolean() });
+  const passwordEntry = z.object({ target: z.string() });
+  const keyMap = entry => z.record(keyIdSchema, entry).refine(items => Object.keys(items).length <= 64);
+  const passwordMap = entry => z.record(z.uuid(), entry).refine(items => Object.keys(items).length <= 256);
   const cipher = z.string().min(1);
-  const vault = storage(path.join(userData, 'credentials.json'), { keys: {}, passwords: {} },
-    data => z.object({
-      keys: z.record(z.string().regex(/^[A-Za-z0-9_-]{43}$/), z.object({
-        id: z.string(), name: z.string(), type: z.string(), publicBlob: z.string(), protected: z.boolean(), cipher,
-      })),
-      passwords: z.record(z.uuid(), z.object({ target: z.string(), cipher })),
-    }).parse(data));
+  const vaultSchema = z.object({
+    keys: keyMap(privateKey.extend({ cipher })),
+    passwords: passwordMap(passwordEntry.extend({ cipher })),
+  });
+  const portableSchema = z.strictObject({
+    hosts, keys: keyMap(privateKey.extend({ secret: z.base64().min(4).max(174764) })),
+    passwords: passwordMap(passwordEntry.extend({ secret: z.base64().min(4).max(21848) })),
+  }).refine(data => new Set(data.hosts.map(host => host.id)).size === data.hosts.length &&
+    Object.entries(data.keys).every(([id, key]) => id === key.id) &&
+    Object.entries(data.passwords).every(([id, entry]) => data.hosts.some(host =>
+      host.id === id && host.auth === 'password' && entry.target === JSON.stringify([host.host, host.port, host.username]))));
+  const workspaceSchema = z.object({ servers: serverSchema, vault: vaultSchema, checkpoint: checkpointSchema.optional() });
+  const workspace = storage(path.join(userData, 'workspace.json'), () => ({
+    servers: storage(path.join(userData, 'servers.json'), { hosts: [], hostKeys: {} }, serverSchema.parse).data,
+    vault: storage(path.join(userData, 'credentials.json'), { keys: {}, passwords: {} }, vaultSchema.parse).data,
+  }), workspaceSchema.parse);
+  const localStore = field => ({
+    get data() { return workspace.data[field]; },
+    update: edit => workspace.update(next => { edit(next[field]); }),
+  });
+  const store = localStore('servers');
+  const vault = localStore('vault');
   credentials = new credentialsApi.Credentials({ store: vault, encryption: {
     available: () => safeStorage.isEncryptionAvailable() &&
       (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
     encrypt: value => safeStorage.encryptString(value),
     decrypt: value => safeStorage.decryptString(value),
   } });
+  const sync = new Sync({ workspace, credentials, publish, signal: shutdown.signal,
+    parseVault: data => {
+      const parsed = portableSchema.safeParse(data);
+      if (!parsed.success) throw Error('Формат облачного хранилища повреждён или не поддерживается.');
+      return parsed.data;
+    },
+    openExternal: url => shell.openExternal(url),
+    resolveConflict: async ({ kind, local, remote }) => {
+      const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Синхронизация',
+        message: kind === 'host' ? 'Конфликт в настройках сервера' : 'Конфликт SSH-ключа',
+        detail: 'На устройстве: ' + (local ?? 'удалено') + '\nНа сервере синхронизации: ' + (remote ?? 'удалено'),
+        buttons: ['Отмена', 'Выбрать локальную', 'Выбрать облачную'], defaultId: 0, cancelId: 0 });
+      return [null, 'local', 'remote'][answer.response];
+    },
+  });
   const { token, persistent } = pairing(path.join(userData, 'pairing.dat'));
   const root = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..');
   const bridge = path.join(root, ...(app.isPackaged ? ['bridge'] : ['build', 'bridge']), 'sshash-pipe.exe');
@@ -124,7 +166,7 @@ if (primary) app.whenReady().then(() => {
   const agentAddress = () => testLaunch && process.env.SSHASH_TEST_AGENT
     ? process.env.SSHASH_TEST_AGENT
     : process.platform === 'win32' ? '//./pipe/openssh-ssh-agent' : process.env.SSH_AUTH_SOCK;
-  const access = new Access({ sessions: null, change: publish });
+  const access = new Access({ sessions: null, change: publish, approvalMode: settings.data.approvalMode });
   sessions = new Sessions({
     store, change: publish, revoke: id => access.revoke(id),
     authenticate: host => credentials.authentication(host, agentAddress),
@@ -137,7 +179,8 @@ if (primary) app.whenReady().then(() => {
   function snapshot() {
     return {
       hosts: store.data.hosts.map(host => ({ ...host, hasPassword: credentials.hasPassword(host) })),
-      keys: credentials.list(), sessions: sessions.snapshot(), mcp: access.snapshot(), clientCount, localError, persistent,
+      keys: credentials.list(), sessions: sessions.snapshot(), mcp: access.snapshot(), sync: sync.snapshot(),
+      clientCount, localError, persistent,
     };
   }
   function publish() {
@@ -167,6 +210,9 @@ if (primary) app.whenReady().then(() => {
     });
   }
   route('state:get', snapshot);
+  route('sync:login', () => sync.login());
+  route('sync:logout', () => sync.logout());
+  route('sync:transfer', (direction, password) => sync.transfer(direction, password));
   const findHost = id => store.data.hosts.find(item => item.id === id);
   const keyId = id => z.string().regex(/^[A-Za-z0-9_-]{43}$/).parse(id);
   route('key:import', async () => {
@@ -249,6 +295,13 @@ if (primary) app.whenReady().then(() => {
     publish();
   });
   route('mcp:share', (id, generation) => access.share(id, generation));
+  route('mcp:approval-mode', value => {
+    const mode = approvalMode.parse(value);
+    if (settings.data.approvalMode === mode) return;
+    settings.update(data => { data.approvalMode = mode; });
+    access.approvalMode = mode;
+    publish();
+  });
   route('mcp:revoke', () => { if (access.grant) access.revoke(access.grant.sessionId); });
   route('mcp:decide', (...args) => access.decide(...args));
   fileRoutes(route, sessions, () => window);

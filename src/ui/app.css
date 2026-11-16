@@ -34,7 +34,7 @@ aside { background:var(--panel); min-width:0; }
 .key-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:9px 0; border-bottom:1px solid var(--line); }
 .key-details { flex:1; min-width:75px; overflow-wrap:anywhere; }
 #key-list { margin-top:14px; }
-#host-form select { color:inherit; background:var(--field); border:1px solid var(--line); border-radius:5px; padding:6px; font:inherit; }
+#host-form select, .mcp-settings select { color:inherit; background:var(--field); border:1px solid var(--line); border-radius:5px; padding:6px; font:inherit; }
 #home-history .history { margin-bottom:6px; }
 .mcp { border-left:1px solid var(--line); display:flex; flex-direction:column; }
 .heading { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px; }
@@ -78,6 +78,11 @@ summary { cursor:pointer; color:#c6d1dc; padding:5px; font-weight:600; overflow-
 .mcp-controls { display:flex; justify-content:space-between; align-items:center; padding:0 12px 12px; }
 .mcp-content { flex:1; overflow:auto; }
 .mcp-content section { padding:12px; border-top:1px solid var(--line); }
+.mcp-settings { display:grid; gap:7px; }
+.mcp-settings label { font-size:13px; font-weight:600; }
+.mcp-settings select { width:100%; min-width:0; }
+.sync-card { max-width:520px; gap:14px; }
+.sync-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .card { border:1px solid #344252; background:#161e29; border-radius:7px; padding:10px; margin-bottom:7px; display:grid; gap:8px; overflow-wrap:anywhere; }
 .card:last-child { margin-bottom:0; }
 .pending-card { border-color:#645337; }

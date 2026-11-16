@@ -3,14 +3,14 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { Access } = require('../src/access.cjs');
 
-function fixture() {
+function fixture(approvalMode = 'manual') {
   const writes = [];
   const session = {
     id: randomUUID(), generation: randomUUID(), host: { host: 'localhost', username: 'test', port: 22 },
     stream: { write: value => writes.push(value) },
   };
   const sessions = { items: new Map([[session.id, session]]), writable: s => Boolean(s?.stream) };
-  const access = new Access({ sessions, change() {} });
+  const access = new Access({ sessions, change() {}, approvalMode });
   access.enabled = true;
   access.share(session.id, session.generation);
   const { target, ...binding } = access.binding();
@@ -69,23 +69,18 @@ test('writes once, cancel after send cannot imply stopped', async () => {
   assert.deepEqual(writes, ['echo café\r']);
 });
 
-test('UTF-8 output is bounded, edited and released only on approval', async () => {
+test('UTF-8 output is bounded and always released automatically', async () => {
   const { access, args, session } = fixture();
   const bytes = Buffer.from('секрет\r\n');
   access.append(session, bytes.subarray(0, 1));
   access.append(session, bytes.subarray(1));
-  const a = { ...args(), maxChars: 128 };
-  const pending = access.call('p', 'output', a);
-  assert.equal(access.snapshot().pending[0].draft, 'секрет\n');
-  access.decide(a.requestId, true, '[скрыто]');
-  const result = await pending;
-  assert.equal(result.output, '[скрыто]');
+  const read = maxChars => access.call('p', 'output', { ...args(), maxChars });
+  const result = await read(3);
+  assert.equal(result.output, 'сек');
   assert.match(result.warning, /НЕДОВЕРЕННЫЕ/);
-  const b = { ...args(), maxChars: 128 };
-  const next = access.call('p', 'output', b);
-  assert.equal(access.snapshot().pending[0].draft, '');
-  access.closed('p');
-  assert.equal((await next).status, 'cancelled');
+  assert.equal((await read(128)).output, 'рет\n');
+  assert.equal((await read(128)).output, '');
+  assert.deepEqual(access.snapshot().pending, []);
 });
 
 test('blocked SSH stream does not enqueue an approved command', async () => {
@@ -96,4 +91,39 @@ test('blocked SSH stream does not enqueue an approved command', async () => {
   access.decide(a.requestId, true);
   assert.equal((await pending).status, 'busy');
   assert.deepEqual(writes, []);
+});
+
+test('manual input stays pending while new output is released and the setting changes', async () => {
+  const { access, args, session, writes } = fixture();
+  access.append(session, Buffer.from('\x1b[31mhello\x1b[0m\r\n'));
+  const input = { ...args(), text: 'echo manual' };
+  const pending = access.call('p', 'send', input);
+  const result = await access.call('p', 'output', { ...args(), maxChars: 64 });
+  assert.equal(result.status, 'released');
+  assert.equal(result.output, 'hello\n');
+  assert.match(result.warning, /НЕДОВЕРЕННЫЕ/);
+  assert.equal(access.snapshot().history[0].automatic, true);
+  assert.deepEqual(access.snapshot().pending.map(request => request.requestId), [input.requestId]);
+  access.approvalMode = 'all';
+  access.decide(input.requestId, false);
+  assert.equal((await pending).status, 'denied');
+  assert.deepEqual(writes, []);
+});
+
+test('auto input sends once and checks the expiry, connection and stream before writing', async () => {
+  const { access, args, session, writes } = fixture('all');
+  assert.equal(access.call('p', 'status').approvalMode, 'all');
+  const command = { ...args(), text: 'echo automatic' };
+  assert.equal((await access.call('p', 'send', command)).status, 'sent');
+  assert.throws(() => access.call('p', 'send', command), /использован/);
+  assert.equal(access.snapshot().history[0].automatic, true);
+  assert.deepEqual(access.snapshot().pending, []);
+  assert.equal((await access.call('p', 'send', {
+    ...args(), text: 'echo expired', expiresAt: Date.now() - 1,
+  })).status, 'expired');
+  session.stream.writableNeedDrain = true;
+  assert.equal((await access.call('p', 'send', { ...args(), text: 'echo busy' })).status, 'busy');
+  access.revoke(session.id);
+  assert.throws(() => access.call('p', 'send', { ...args(), text: 'echo revoked' }), /отозвано/);
+  assert.deepEqual(writes, ['echo automatic\r']);
 });

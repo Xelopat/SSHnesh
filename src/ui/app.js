@@ -15,7 +15,6 @@ const actionText = {
 let state, selected, editing, noticeTimer, view = 'home', mcpOpen = false;
 let homeSection = 'servers';
 const panes = new Map();
-const drafts = new Map();
 const groupsClosed = new Set();
 const idPart = id => id.slice(0, 8);
 const endpoint = host => host.username + '@' + (host.host.includes(':') ? '[' + host.host + ']' : host.host) + ':' + host.port;
@@ -115,7 +114,43 @@ function renderHome() {
     $(node.getAttribute('aria-controls')).hidden = !active;
   }
   if (homeSection === 'keys' && state) renderKeys();
+  if (homeSection === 'sync' && state) renderSync();
 }
+
+function renderSync() {
+  const { username, busy } = state.sync;
+  $('sync-account').textContent = username ? 'Аккаунт · ' + username : busy ? 'Завершите вход в браузере.' : 'Войдите в аккаунт xelopat.ru.';
+  $('sync-login').hidden = Boolean(username);
+  $('sync-logout').hidden = !username;
+  $('sync-form').hidden = !username;
+  for (const control of $('home-sync').querySelectorAll('button, input')) control.disabled = busy;
+}
+
+async function syncAction(action, message) {
+  const status = $('sync-message');
+  status.hidden = true;
+  try {
+    if (await action() === false) return;
+    status.className = 'muted';
+    status.textContent = message;
+  } catch (error) {
+    status.className = 'error';
+    status.textContent = error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+  }
+  status.hidden = false;
+}
+
+$('sync-login').onclick = () => syncAction(api.syncLogin, 'Вход выполнен.');
+$('sync-logout').onclick = () => syncAction(api.syncLogout, 'Вы вышли из синхронизации.');
+$('sync-form').onsubmit = event => {
+  event.preventDefault();
+  const direction = event.submitter?.value ?? 'pull';
+  const input = $('sync-password');
+  const password = input.value;
+  input.value = '';
+  return syncAction(() => api.syncTransfer(direction, password),
+    direction === 'pull' ? 'Локальные и облачные данные объединены.' : 'Хранилище сохранено на сервере.');
+};
 
 function authFields() {
   const auth = $('host-auth').value;
@@ -301,49 +336,41 @@ function renderSessions() {
 }
 
 function renderMcp() {
-  const { enabled, shared, pending, history } = state.mcp;
+  const { enabled, approvalMode, shared, pending, history } = state.mcp;
   $('mcp-badge').textContent = pending.length ? ' ' + pending.length : '';
   $('toggle-mcp').classList.toggle('has-requests', pending.length > 0);
   const indicator = $('mcp-status');
   indicator.className = 'indicator ' + (enabled ? 'good' : state.localError ? 'bad' : '');
   indicator.textContent = state.localError ? 'Ошибка канала' : enabled ? 'Включён · клиентов ' + state.clientCount : 'Выключен';
   $('enable').textContent = enabled ? 'Выключить' : 'Включить';
+  $('mcp-approval-mode').value = approvalMode;
   $('foot-mcp').textContent = 'MCP · ' + (shared ? '1 сессия передана' : enabled ? 'Включён' : 'Выключен');
   const card = el('div', undefined, 'card');
   if (shared) {
     card.append(el('strong', shared.target), el('span', 'Сессия ' + idPart(shared.sessionId) + ' · соединение ' + idPart(shared.generation), 'muted'),
-      el('span', 'Ввод и новый вывод по подтверждению', 'muted'), button('Отозвать', api.revoke));
+      button('Отозвать', api.revoke));
   } else {
     card.append(el('p', state.localError || 'Передайте подключённую вкладку из панели терминала.', state.localError ? 'error' : 'muted'));
   }
   $('shared').replaceChildren(card);
 
-  for (const id of drafts.keys()) if (!pending.some(item => item.requestId === id)) drafts.delete(id);
   $('pending-count').textContent = pending.length || '';
   const list = $('pending');
   const oldNodes = new Map([...list.children].map(node => [node.dataset.id, node]));
   const nodes = pending.map(request => {
-    const { requestId, method, target, sessionId, generation, expiresAt, text, draft, truncated } = request;
+    const { requestId, target, sessionId, generation, expiresAt, text } = request;
     if (oldNodes.has(requestId)) return oldNodes.get(requestId);
     const node = el('article', undefined, 'card pending-card');
     node.dataset.id = requestId;
     const clock = el('span', undefined, 'muted');
     clock.dataset.deadline = expiresAt;
     clock.textContent = 'До ' + new Date(expiresAt).toLocaleTimeString('ru-RU');
-    node.append(el('strong', method === 'send' ? 'Ввод в терминал' : 'Передача вывода', 'warn'),
-      el('span', target, 'ellipsis'), el('span', 'Сессия ' + idPart(sessionId) + ' · соединение ' + idPart(generation), 'muted'), clock);
-    if (method === 'send') {
-      node.append(el('pre', text), el('p', 'Текст и Enter попадут в текущий PTY. Проверьте, что в терминале открыт нужный процесс и строка ввода пуста.', 'muted'));
-    } else {
-      const input = el('textarea');
-      input.setAttribute('aria-label', 'Редактируемый фрагмент вывода');
-      input.value = draft;
-      input.oninput = () => drafts.set(requestId, input.value);
-      node.append(el('p', (truncated ? 'Буфер переполнен. ' : '') + 'Проверьте фрагмент и удалите чувствительные данные.', 'muted'), input);
-    }
+    node.append(el('strong', 'Ввод в терминал', 'warn'),
+      el('span', target, 'ellipsis'), el('span', 'Сессия ' + idPart(sessionId) + ' · соединение ' + idPart(generation), 'muted'), clock,
+      el('pre', text), el('p', 'Текст и Enter попадут в текущий PTY. Проверьте, что в терминале открыт нужный процесс и строка ввода пуста.', 'muted'));
     const actions = el('div', undefined, 'actions');
     actions.append(button('Отклонить', () => api.decide(requestId, false)),
-      button(method === 'send' ? 'Отправить в PTY' : 'Передать вывод', () => api.decide(requestId, true, drafts.get(requestId) ?? draft), 'primary'));
+      button('Отправить в PTY', () => api.decide(requestId, true), 'primary'));
     node.append(actions);
     return node;
   });
@@ -364,7 +391,7 @@ function renderHistory(historyList, history) {
     row.open = expanded.has(item.requestId);
     const summary = el('summary');
     const label = actionText[item.status] ?? item.status;
-    summary.append(el('span', label, ['sent', 'released'].includes(item.status) ? 'good-text' : 'warn'),
+    summary.append(el('span', label + (item.automatic ? ' · авто' : ''), ['sent', 'released'].includes(item.status) ? 'good-text' : 'warn'),
       el('small', new Date(item.at).toLocaleTimeString('ru-RU')));
     row.append(summary, el('p', (item.method === 'send' ? 'Ввод · ' : 'Вывод · ') + item.target, 'muted'),
       el('p', 'Сессия ' + idPart(item.sessionId) + ' · соединение ' + idPart(item.generation), 'muted'),
@@ -375,6 +402,14 @@ function renderHistory(historyList, history) {
   }) : [el('p', 'Действий пока нет', 'muted')]));
 }
 $('enable').onclick = safe(() => api.enable(!state.mcp.enabled));
+$('mcp-approval-mode').onchange = safe(async ({ currentTarget: select }) => {
+  select.disabled = true;
+  try { await api.setApprovalMode(select.value); }
+  finally {
+    select.value = state.mcp.approvalMode;
+    select.disabled = false;
+  }
+});
 $('toggle-mcp').onclick = () => { mcpOpen = !mcpOpen; render(); };
 $('config').onclick = safe(async () => {
   await api.config();

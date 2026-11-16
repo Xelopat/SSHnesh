@@ -194,7 +194,7 @@ async function main() {
   report('two-pane SFTP, drag/drop both ways, byte equality, refused overwrites and local folder scope');
   await page.getByRole('tab', { name: 'Тестовый сервер' }).click();
   await action('MCP').click();
-  await action('Настройка').click();
+  await action('Копировать конфигурацию').click();
   const config = await app.evaluate(async ({ clipboard }) => JSON.parse(await clipboard.readText()).mcpServers.sshash);
   await app.evaluate(({ clipboard }) => clipboard.clear());
   await checkInvalidProof(config.env.SSHASH_MCP_TOKEN);
@@ -208,6 +208,15 @@ async function main() {
     return JSON.parse(response.content[0].text);
   };
   const list = () => call('list_shared_sessions');
+  const approvalMode = page.getByRole('combobox', { name: 'Ввод в терминал' });
+  const chooseMode = async value => {
+    await approvalMode.selectOption(value);
+    await waitFor(async () => (await snapshot()).mcp.approvalMode === value && await approvalMode.isEnabled(), 'approval mode selected');
+    assert.equal((await call('integration_status')).approvalMode, value);
+  };
+  assert.equal(await approvalMode.inputValue(), 'all');
+  assert.equal((await call('integration_status')).approvalMode, 'all');
+  await chooseMode('manual');
   assert.deepEqual(await list(), []);
   await action('Включить').click();
   await action('Передать MCP').click();
@@ -258,17 +267,23 @@ async function main() {
   await app.evaluate(({ clipboard }) => clipboard.clear());
   report('authenticated stdio MCP, explicit share, minimize, exact approval, tab isolation, deduplication and terminal copy');
 
-  const output = request({ maxChars: 1024 });
-  const outputResult = call('request_terminal_output', output);
-  const preview = await pending(output);
-  assert.match(preview.draft, /mcp-hello-42/);
-  assert.doesNotMatch(preview.draft, /Привет/);
-  await page.getByRole('textbox', { name: 'Редактируемый фрагмент вывода' }).fill('mcp-hello-42 [edited]');
-  await action('Передать вывод').click();
-  const released = await outputResult;
-  assert.equal(released.output, 'mcp-hello-42 [edited]');
+  const released = await call('request_terminal_output', request({ maxChars: 1024 }));
+  assert.equal(released.status, 'released');
+  assert.match(released.output, /mcp-hello-42/);
+  assert.doesNotMatch(released.output, /Привет/);
   assert.match(released.warning, /НЕДОВЕРЕННЫЕ/);
-  report('new output only, editable review, exact released value');
+  await page.locator('#history').getByText('Вывод передан · авто', { exact: true }).waitFor();
+  const manualInput = request({ text: 'echo mcp-manual-input' });
+  const manualResult = send(manualInput);
+  await pending(manualInput);
+  await chooseMode('all');
+  await action('Отклонить').click();
+  assert.equal((await manualResult).status, 'denied');
+  assert.equal((await send(request({ text: 'echo mcp-auto-input' }))).status, 'sent');
+  await waitFor(() => hasLine('mcp-auto-input'), 'automatic input delivered');
+  await page.locator('#history').getByText('Отправлено в PTY · авто', { exact: true }).waitFor();
+  await chooseMode('manual');
+  report('automatic output, full auto input, history and manual review of pending requests');
 
   const denied = request({ text: 'touch ' + work + '/denied' });
   const denyResult = send(denied);
@@ -417,7 +432,7 @@ async function main() {
   const account = (await snapshot()).hosts.find(h => h.auth === 'password');
   assert.equal(account.hasPassword, true);
   assert.equal((await snapshot()).keys[0].unlocked, true);
-  const vault = fs.readFileSync(path.join(profile, 'credentials.json'), 'utf8');
+  const vault = fs.readFileSync(path.join(profile, 'workspace.json'), 'utf8');
   const stateJson = JSON.stringify(await snapshot());
   for (const marker of [password, 'OPENSSH PRIVATE KEY', 'lab-key-phrase']) {
     assert.ok(!vault.includes(marker) && !stateJson.includes(marker));
@@ -433,6 +448,9 @@ async function main() {
   const reopened = await app.firstWindow();
   const after = (...args) => reopened.evaluate(([method, values]) => window.sshash[method](...values), [args[0], args.slice(1)]);
   await reopened.getByRole('heading', { name: 'Серверы' }).waitFor();
+  await reopened.getByRole('button', { name: 'MCP', exact: true }).click();
+  assert.equal(await reopened.getByRole('combobox', { name: 'Ввод в терминал' }).inputValue(), 'manual');
+  await reopened.getByRole('button', { name: 'MCP', exact: true }).click();
   assert.equal((await after('state')).keys[0].unlocked, false);
   await mockKeyImport();
   const keySession = await after('connect', keyHost);
@@ -449,7 +467,7 @@ async function main() {
   await ready(passSession);
   await after('clearPassword', account.id);
   await after('removeKey', keys[0].id);
-  const removed = JSON.parse(fs.readFileSync(path.join(profile, 'credentials.json')));
+  const removed = JSON.parse(fs.readFileSync(path.join(profile, 'workspace.json'))).vault;
   assert.deepEqual(removed, { keys: {}, passwords: {} });
   report('encrypted vault, import of passphrase-protected key, password and key logins after restart, and removal');
 

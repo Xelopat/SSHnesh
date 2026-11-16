@@ -20,6 +20,7 @@
       <button data-section="servers" aria-controls="home-servers" aria-current="page"><span aria-hidden="true">▤</span>Серверы</button>
       <button data-section="keys" aria-controls="home-keys"><span aria-hidden="true">⚿</span>Ключи</button>
       <button data-section="logs" aria-controls="home-logs"><span aria-hidden="true">◷</span>Журнал MCP</button>
+      <button data-section="sync" aria-controls="home-sync"><span aria-hidden="true">↻</span>Синхронизация</button>
     </nav>
     <section id="home-servers" class="servers home-page" aria-labelledby="servers-title">
       <header class="heading"><h1 id="servers-title">Серверы</h1><button id="add" class="primary">+ Добавить сервер</button></header>
@@ -34,6 +35,25 @@
     <section id="home-logs" class="home-page" aria-labelledby="logs-title" hidden>
       <header class="heading"><h1 id="logs-title">Журнал MCP</h1></header>
       <div id="home-history"></div>
+    </section>
+    <section id="home-sync" class="home-page" aria-labelledby="sync-title" hidden>
+      <header class="heading"><h1 id="sync-title">Синхронизация</h1></header>
+      <div class="card sync-card">
+        <p id="sync-account" role="status">Войдите в аккаунт xelopat.ru.</p>
+        <div class="sync-actions">
+          <button id="sync-login" class="primary">Войти через xelopat.ru</button>
+          <button id="sync-logout" hidden>Выйти</button>
+        </div>
+        <form id="sync-form" hidden>
+          <label>Мастер-пароль<input id="sync-password" type="password" autocomplete="off" maxlength="1024" required aria-describedby="sync-hint"></label>
+          <p id="sync-hint" class="muted">Для первого сохранения придумайте мастер-пароль от 16 символов. На другом устройстве используйте тот же пароль.</p>
+          <div class="sync-actions">
+            <button type="submit" value="pull" class="primary">Скачать с сервера</button>
+            <button type="submit" value="push">Сохранить на сервере</button>
+          </div>
+        </form>
+        <p id="sync-message" role="status" class="muted" hidden></p>
+      </div>
     </section>
   </section>
   <section id="files" class="files" aria-label="Файлы SFTP" hidden>
@@ -66,9 +86,17 @@
     </div>
   </section>
   <aside id="mcp-panel" class="mcp" aria-label="Панель MCP" hidden>
-    <header class="heading"><h2>MCP</h2><button id="config" title="Копировать конфигурацию с ключом сопряжения">Настройка</button></header>
+    <header class="heading"><h2>MCP</h2><button id="config" title="Копировать конфигурацию с ключом сопряжения">Копировать конфигурацию</button></header>
     <div class="mcp-controls"><span id="mcp-status" class="indicator"></span><button id="enable"></button></div>
     <div class="mcp-content">
+      <section class="mcp-settings">
+        <label for="mcp-approval-mode">Ввод в терминал</label>
+        <select id="mcp-approval-mode" aria-describedby="mcp-approval-info">
+          <option value="all">Отправлять автоматически</option>
+          <option value="manual">Запрашивать подтверждение</option>
+        </select>
+        <p id="mcp-approval-info" class="muted">Для переданной сессии новый вывод всегда доступен клиенту MCP без подтверждения.</p>
+      </section>
       <section><h3>Переданная сессия</h3><div id="shared"></div></section>
       <section><h3>Запросы на подтверждение <span id="pending-count"></span></h3><div id="pending"></div></section>
       <section><h3>История действий</h3><div id="history"></div></section>
