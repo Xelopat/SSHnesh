@@ -88,17 +88,20 @@
   <aside id="mcp-panel" class="mcp" aria-label="Панель MCP" hidden>
     <header class="heading"><h2>MCP</h2><button id="config" title="Копировать конфигурацию с ключом сопряжения">Копировать конфигурацию</button></header>
     <div class="mcp-controls"><span id="mcp-status" class="indicator"></span><button id="enable"></button></div>
-    <div class="mcp-content">
+    <div id="mcp-content" class="mcp-content">
+      <section class="mcp-requests" aria-labelledby="mcp-requests-title">
+        <h3 id="mcp-requests-title">Запросы на подтверждение <span id="pending-count"></span></h3>
+        <div id="pending"></div>
+      </section>
+      <section><h3>Переданная сессия</h3><div id="shared"></div></section>
       <section class="mcp-settings">
         <label for="mcp-approval-mode">Ввод в терминал</label>
         <select id="mcp-approval-mode" aria-describedby="mcp-approval-info">
-          <option value="all">Отправлять автоматически</option>
           <option value="manual">Запрашивать подтверждение</option>
+          <option value="all">Отправлять автоматически</option>
         </select>
         <p id="mcp-approval-info" class="muted">Для переданной сессии новый вывод всегда доступен клиенту MCP без подтверждения.</p>
       </section>
-      <section><h3>Переданная сессия</h3><div id="shared"></div></section>
-      <section><h3>Запросы на подтверждение <span id="pending-count"></span></h3><div id="pending"></div></section>
       <section><h3>История действий</h3><div id="history"></div></section>
     </div>
   </aside>

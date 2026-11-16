@@ -1,6 +1,6 @@
 {
   "name": "sshnesh",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Desktop SSH client with explicit MCP session sharing",
   "main": "src/main.cjs",
   "scripts": {

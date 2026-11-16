@@ -49,32 +49,43 @@ function button(label, fn, className, title) {
   return node;
 }
 const renderFiles = setupFiles({ api, $, el, button, endpoint });
+let renderedHosts;
 function renderHosts() {
   const filter = $('search').value.trim().toLowerCase();
-  const groups = Map.groupBy(state.hosts.filter(host =>
-    [host.label, host.group, endpoint(host)].some(value => value.toLowerCase().includes(filter))), host => host.group);
+  const selectedHost = selectedSession()?.host.id;
+  const matches = state.hosts.filter(host =>
+    [host.label, host.group, endpoint(host)].some(value => value.toLowerCase().includes(filter)));
+  const signature = JSON.stringify([filter, selectedHost, matches]);
+  if (signature === renderedHosts) return;
+  renderedHosts = signature;
+  const groups = Map.groupBy(matches, host => host.group);
   const entries = [];
   for (const [group, hosts] of groups) {
     const details = el('details');
+    details.className = 'server-group';
     details.open = Boolean(filter) || !groupsClosed.has(group);
     details.ontoggle = () => {
       if (filter) return;
       if (details.open) groupsClosed.delete(group);
       else groupsClosed.add(group);
     };
-    details.append(el('summary', group + ' · ' + hosts.length));
+    const heading = el('summary');
+    heading.append(el('span', group), el('span', String(hosts.length), 'server-count'));
+    details.append(heading);
+    const list = el('ul', undefined, 'server-list');
     for (const host of hosts) {
-      const active = selectedSession()?.host.id === host.id;
-      const row = el('div', undefined, 'server-row' + (active ? ' selected' : ''));
-      const connect = button('', async () => {
+      const row = el('li', undefined, 'server-row' + (selectedHost === host.id ? ' selected' : ''));
+      const address = el('span', endpoint(host), 'server-address');
+      const actions = el('div', undefined, 'server-actions');
+      actions.append(button('Подключить', async () => {
         const id = await api.connect(host.id);
         if (id) { selected = id; view = 'terminal'; render(); }
-      }, 'server-main');
-      connect.title = 'Открыть вкладку · ' + endpoint(host);
-      connect.append(el('span', host.label, 'server-name'), el('span', endpoint(host), 'muted ellipsis'));
-      row.append(connect, button('⋯', () => edit(host), undefined, 'Настроить ' + host.label));
-      details.append(row);
+      }, 'primary', 'Подключить · ' + host.label),
+      button('Настроить', () => edit(host), 'server-edit', 'Настроить ' + host.label));
+      row.append(el('strong', host.label, 'server-name'), address, actions);
+      list.append(row);
     }
+    details.append(list);
     entries.push(details);
   }
   $('hosts').replaceChildren(...(entries.length ? entries : [el('p', filter ? 'Серверы не найдены' : 'Добавьте первый сервер.', 'muted')]));
@@ -356,6 +367,7 @@ function renderMcp() {
 
   $('pending-count').textContent = pending.length || '';
   const list = $('pending');
+  const hadPending = Boolean(list.querySelector('.pending-card'));
   const oldNodes = new Map([...list.children].map(node => [node.dataset.id, node]));
   const nodes = pending.map(request => {
     const { requestId, target, sessionId, generation, expiresAt, text } = request;
@@ -366,7 +378,7 @@ function renderMcp() {
     clock.dataset.deadline = expiresAt;
     clock.textContent = 'До ' + new Date(expiresAt).toLocaleTimeString('ru-RU');
     node.append(el('strong', 'Ввод в терминал', 'warn'),
-      el('span', target, 'ellipsis'), el('span', 'Сессия ' + idPart(sessionId) + ' · соединение ' + idPart(generation), 'muted'), clock,
+      el('span', target, 'request-target'), el('span', 'Сессия ' + idPart(sessionId) + ' · соединение ' + idPart(generation), 'muted'), clock,
       el('pre', text), el('p', 'Текст и Enter попадут в текущий PTY. Проверьте, что в терминале открыт нужный процесс и строка ввода пуста.', 'muted'));
     const actions = el('div', undefined, 'actions');
     actions.append(button('Отклонить', () => api.decide(requestId, false)),
@@ -378,6 +390,7 @@ function renderMcp() {
   else {
     for (const node of [...list.children]) if (!nodes.includes(node)) node.remove();
     for (const node of nodes) if (!node.isConnected) list.append(node);
+    if (mcpOpen && !hadPending) $('mcp-content').scrollTop = 0;
   }
   renderHistory($('history'), history);
   renderHistory($('home-history'), history);
@@ -410,7 +423,11 @@ $('mcp-approval-mode').onchange = safe(async ({ currentTarget: select }) => {
     select.disabled = false;
   }
 });
-$('toggle-mcp').onclick = () => { mcpOpen = !mcpOpen; render(); };
+$('toggle-mcp').onclick = () => {
+  mcpOpen = !mcpOpen;
+  render();
+  if (mcpOpen && state.mcp.pending.length) $('mcp-content').scrollTop = 0;
+};
 $('config').onclick = safe(async () => {
   await api.config();
   notify('Конфигурация с ключом сопряжения скопирована. Вставьте её в настройки локального MCP-клиента.' +

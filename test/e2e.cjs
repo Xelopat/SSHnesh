@@ -124,7 +124,11 @@ async function main() {
   await form.getByLabel('Пользователь').fill(operator);
   await action('Сохранить').click();
   const host = await waitFor(async () => (await snapshot()).hosts[0], 'saved host');
-  await page.getByRole('button', { name: /Тестовый сервер.*@127/ }).click();
+  const connectHost = action('Подключить · Тестовый сервер');
+  await connectHost.waitFor();
+  fs.mkdirSync(path.dirname(screenshot), { recursive: true });
+  await page.screenshot({ path: path.join(path.dirname(screenshot), 'windows-servers.png') });
+  await connectHost.click();
   await page.getByRole('heading', { name: 'Первое подключение' }).waitFor();
   const initial = await waitFor(async () => (await snapshot()).sessions[0]?.trust, 'host fingerprint');
   assert.ok(labFingerprint('a').includes(initial.fingerprint));
@@ -214,9 +218,8 @@ async function main() {
     await waitFor(async () => (await snapshot()).mcp.approvalMode === value && await approvalMode.isEnabled(), 'approval mode selected');
     assert.equal((await call('integration_status')).approvalMode, value);
   };
-  assert.equal(await approvalMode.inputValue(), 'all');
-  assert.equal((await call('integration_status')).approvalMode, 'all');
-  await chooseMode('manual');
+  assert.equal(await approvalMode.inputValue(), 'manual');
+  assert.equal((await call('integration_status')).approvalMode, 'manual');
   assert.deepEqual(await list(), []);
   await action('Включить').click();
   await action('Передать MCP').click();
@@ -250,6 +253,9 @@ async function main() {
   assert.equal(await page.locator('#mcp-panel').isVisible(), false);
   await page.screenshot({ path: path.join(path.dirname(screenshot), 'windows-terminal.png') });
   await page.getByRole('button', { name: 'MCP 1', exact: true }).click();
+  const pendingBox = await page.locator('.pending-card').boundingBox();
+  const preferencesBox = await approvalMode.boundingBox();
+  assert.ok(pendingBox && preferencesBox && pendingBox.y < preferencesBox.y);
   await page.screenshot({ path: screenshot });
   await tabs.nth(1).click();
   await action('Отправить в PTY').click();
@@ -439,6 +445,7 @@ async function main() {
   }
   assert.doesNotMatch(stateJson, /"cipher"/);
   fs.unlinkSync(keyPath);
+  await ui('setApprovalMode', 'all');
   await mcp.close();
   mcp = undefined;
   await app.close();
@@ -449,7 +456,7 @@ async function main() {
   const after = (...args) => reopened.evaluate(([method, values]) => window.sshash[method](...values), [args[0], args.slice(1)]);
   await reopened.getByRole('heading', { name: 'Серверы' }).waitFor();
   await reopened.getByRole('button', { name: 'MCP', exact: true }).click();
-  assert.equal(await reopened.getByRole('combobox', { name: 'Ввод в терминал' }).inputValue(), 'manual');
+  assert.equal(await reopened.getByRole('combobox', { name: 'Ввод в терминал' }).inputValue(), 'all');
   await reopened.getByRole('button', { name: 'MCP', exact: true }).click();
   assert.equal((await after('state')).keys[0].unlocked, false);
   await mockKeyImport();

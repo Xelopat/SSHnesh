@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { Access } = require('../src/access.cjs');
 
-function fixture(approvalMode = 'manual') {
+function fixture(approvalMode) {
   const writes = [];
   const session = {
     id: randomUUID(), generation: randomUUID(), host: { host: 'localhost', username: 'test', port: 22 },
