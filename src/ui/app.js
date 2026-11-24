@@ -237,6 +237,7 @@ function renderHome() {
 }
 
 function renderSync() {
+  if (api.prototypeMode) return api.renderAccount?.(state);
   const { username, busy, canCancel, error, cached, unlocked } = state.sync;
   $('sync-account').textContent = error || (username ? (api.prototypeMode ? username : 'Аккаунт · ' + username) : busy
     ? api.mobileAccount && !canCancel ? 'Обрабатываем запрос…' : 'Завершите вход в браузере.'
@@ -253,7 +254,6 @@ function renderSync() {
   for (const control of $('home-sync').querySelectorAll('button, input')) control.disabled = busy;
   $('sync-cancel').hidden = !canCancel;
   $('sync-cancel').disabled = !canCancel;
-  api.renderAccount?.(state);
 }
 
 async function syncAction(action, message) {
@@ -270,20 +270,22 @@ async function syncAction(action, message) {
   status.hidden = false;
 }
 
-$('sync-login').onclick = () => syncAction(api.syncLogin, 'Вход выполнен.');
-$('sync-cancel').onclick = () => syncAction(api.syncCancel, 'Вход отменён.');
-$('sync-logout').onclick = () => syncAction(api.syncLogout, 'Вы вышли из синхронизации.');
-$('cloud-lock').onclick = () => syncAction(api.cloudLock, 'Хранилище заблокировано.');
-$('sync-form').onsubmit = event => {
-  event.preventDefault();
-  const direction = event.submitter?.value ?? 'pull';
-  const input = $('sync-password');
-  const password = input.value;
-  input.value = '';
-  return syncAction(() => api.syncTransfer(direction, password),
-    api.mobileAccount ? 'Серверы и ключи доступны в приложении.' :
-      direction === 'pull' ? 'Локальные и облачные данные объединены.' : 'Хранилище сохранено на сервере.');
-};
+if (!api.prototypeMode) {
+  $('sync-login').onclick = () => syncAction(api.syncLogin, 'Вход выполнен.');
+  $('sync-cancel').onclick = () => syncAction(api.syncCancel, 'Вход отменён.');
+  $('sync-logout').onclick = () => syncAction(api.syncLogout, 'Вы вышли из синхронизации.');
+  $('cloud-lock').onclick = () => syncAction(api.cloudLock, 'Хранилище заблокировано.');
+  $('sync-form').onsubmit = event => {
+    event.preventDefault();
+    const direction = event.submitter?.value ?? 'pull';
+    const input = $('sync-password');
+    const password = input.value;
+    input.value = '';
+    return syncAction(() => api.syncTransfer(direction, password),
+      api.mobileAccount ? 'Серверы и ключи доступны в приложении.' :
+        direction === 'pull' ? 'Локальные и облачные данные объединены.' : 'Хранилище сохранено на сервере.');
+  };
+}
 
 let renderedTerminalSettings;
 function renderTerminalSettings() {

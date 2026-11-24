@@ -1,3 +1,5 @@
+import { setupAccount } from './account.js';
+
 const { core, event } = window.__TAURI__;
 if (/Android/.test(navigator.userAgent)) document.documentElement.dataset.previewMobile = '';
 let choosingKeyFile = false;
@@ -10,89 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.querySelector('#home-nav [data-section="settings"]').hidden = false;
   if (api.mobileLineInput) document.querySelector('#host-auth option[value=agent]')?.remove();
-  const input = document.getElementById('sync-password');
-  const remember = document.createElement('input');
-  remember.type = 'checkbox';
-  remember.id = 'remember-device-key';
-  const label = document.createElement('label');
-  label.className = 'check-field';
-  label.append(remember, 'Открывать хранилище после разблокировки устройства');
-  input.closest('label').after(label);
-  const forget = document.createElement('button');
-  forget.type = 'button';
-  forget.textContent = 'Забыть ключ';
-  forget.hidden = true;
-  document.querySelector('#home-settings').append(forget);
-  forget.onclick = async () => {
-    try { await call('forgetDeviceKey'); remember.checked = false; }
-    catch (error) { window.alert(error.message); }
-  };
-  const reset = document.createElement('button');
-  reset.type = 'button';
-  reset.textContent = 'Заменить облачное хранилище…';
-  const form = input.form;
-  const actions = form.querySelector('.sync-actions');
-  const pull = actions.querySelector('[value=pull]');
-  const push = actions.querySelector('[value=push]');
-  const unlock = document.getElementById('cloud-unlock');
-  const more = document.createElement('details');
-  more.className = 'account-options';
-  const summary = document.createElement('summary');
-  summary.textContent = 'Другие действия';
-  more.append(summary, actions);
-  const main = document.createElement('button');
-  main.type = 'submit';
-  main.className = 'primary account-main';
-  form.append(main, more);
-  const logout = document.getElementById('sync-logout');
-  logout.type = 'button';
-  pull.classList.remove('primary');
-  pull.textContent = 'Скачать и объединить';
-  push.textContent = 'Синхронизировать с облаком';
-  actions.append(reset, logout);
-  document.getElementById('home-settings').append(document.getElementById('cloud-lock'));
-  input.addEventListener('input', () => {
-    const status = document.getElementById('sync-message');
-    if (status.classList.contains('error')) status.hidden = true;
-  });
-  reset.onclick = async () => {
-    const enrollment = {};
-    const password = await passwordDialog('Замена облачного хранилища', 'Новый мастер-пароль (от 16 символов)', enrollment);
-    if (!password) return;
-    const dialog = document.createElement('dialog');
-    dialog.innerHTML = '<form method="dialog"><h2>Заменить всё в облаке?</h2><p>В облако попадут доступные сейчас локальные серверы и ключи. Записи из закрытого хранилища и изменения с других устройств будут исключены. Перед заменой приложение сохранит имеющиеся зашифрованные копии на этом устройстве.</p><button value="cancel" autofocus>Отмена</button> <button value="replace">Заменить всё</button></form>';
-    document.body.append(dialog);
-    dialog.onclose = async () => {
-      dialog.remove();
-      if (dialog.returnValue !== 'replace') return;
-      const status = document.getElementById('sync-message');
-      try { await call('syncTransfer','replace',password,{...enrollment,confirmed:true}); status.textContent='Облачное хранилище заменено.'; }
-      catch (error) { status.textContent=error.message; }
-      status.hidden=false;
-    };
-    dialog.showModal();
-  };
-  const refresh = state => {
-    const { cached, unlocked, username, busy } = state.sync;
-    const localFirst = cached && !unlocked;
-    main.value = localFirst ? 'unlock' : 'push';
-    main.textContent = localFirst ? 'Открыть хранилище' : 'Синхронизировать';
-    main.hidden = false;
-    main.disabled = busy;
-    push.hidden = !localFirst || !username;
-    unlock.hidden = true;
-    more.hidden = !username;
-    input.closest('label').hidden = !!unlocked;
-    document.getElementById('sync-hint').hidden = cached || unlocked;
-    document.getElementById('cloud-lock').hidden = !unlocked || state.sync.remembered;
-    reset.hidden = !username;
-    reset.disabled = state.sync.busy;
-    forget.hidden = !state.sync.remembered;
-    if (state.sync.remembered) document.getElementById('cloud-lock').hidden = true;
-    input.required = !state.sync.remembered && !state.sync.unlocked;
-    label.hidden = !!state.sync.remembered || unlocked;
-    if (state.sync.remembered) remember.checked = false;
-  };
+  const refresh = setupAccount(api, call, passwordDialog);
   api.renderAccount = refresh;
   let restoring = false;
   const restore = async () => {
@@ -104,9 +24,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (state.sync.remembered && !state.sync.unlocked && !state.sync.busy) {
         await call('syncTransfer','unlock','',{});
       }
-    } catch (error) {
-      document.querySelector('#sync-message').textContent = 'Введите мастер-пароль для открытия хранилища.';
-      document.querySelector('#sync-message').hidden = false;
+    } catch {
+      // The vault stays locked and can be opened with its master password.
     } finally { restoring = false; }
   };
   api.onState(refresh);
@@ -215,7 +134,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelector('#sync-title').textContent = 'Аккаунт';
     document.querySelector('#import-key').hidden = false;
     document.querySelector('#generate-key').hidden = false;
-    document.querySelector('#sync-hint').textContent = 'Для нового хранилища — от 16 символов. Для существующего — его мастер-пароль.';
   }
 });
 
@@ -241,13 +159,24 @@ async function editServerAccounts(host, selectedRole='debug') {
   dialog.onclose=()=>dialog.remove();document.body.append(dialog);dialog.showModal();
 }
 
-function passwordDialog(title = 'Пароль SSH', label = 'Пароль', enrollment) {
+function passwordDialog(title = 'Пароль SSH', label = 'Пароль', enrollment, options = {}) {
   const dialog = document.createElement('dialog');
   dialog.innerHTML = '<form method="dialog"><h2></h2><label><span></span> ' +
     '<input type="password" autocomplete="off" required autofocus></label>' +
     '<div><button type="button">Отмена</button><button class="primary">Сохранить</button></div></form>';
   const form = dialog.querySelector('form');
   const field = dialog.querySelector('input');
+  dialog.setAttribute('aria-label', title);
+  if (options.submit) form.querySelector('.primary').textContent = options.submit;
+  if (options.minLength) field.minLength = options.minLength;
+  if (options.hint) {
+    const hint = document.createElement('p');
+    hint.className = 'muted';
+    hint.id = 'password-dialog-hint';
+    hint.textContent = options.hint;
+    field.setAttribute('aria-describedby', hint.id);
+    field.closest('label').after(hint);
+  }
   if (enrollment) {
     const choice = document.createElement('input');
     choice.type = 'checkbox';
@@ -470,8 +399,8 @@ for (const action of ['syncLogin', 'syncLogout', 'syncCancel', 'syncTransfer', '
   api[action] = (...args) => call(action, ...args);
 }
 window.sshash = api;
-api.syncTransfer = async (mode, password) => {
-  const choices = { rememberDevice: document.getElementById("remember-device-key").checked };
+api.syncTransfer = async (mode, password, enrollment) => {
+  const choices = { ...enrollment };
   for (;;) {
     try { return await call('syncTransfer', mode, password, choices); }
     catch (error) {

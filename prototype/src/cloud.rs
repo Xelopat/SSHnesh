@@ -40,6 +40,8 @@ struct Snapshot {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Vault {
     #[serde(skip)]
+    pub(crate) last_synced: Option<u64>,
+    #[serde(skip)]
     device_hosts: HashMap<String, Value>,
     #[serde(skip)]
     unlock_key: Option<(String,Zeroizing<[u8;32]>)>,
@@ -502,6 +504,8 @@ async fn upload(client: &reqwest::Client, url: &str, token: &str, prior: u32, se
 struct Workspace {
     base: Option<Snapshot>,
     working: Snapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_synced: Option<u64>,
 }
 
 fn read_file<T: serde::de::DeserializeOwned>(
@@ -644,7 +648,10 @@ pub(crate) async fn load(
         decode_hex::<8>(&subject)?;
         let path = app.profiles_path.with_file_name(format!("vault-{subject}.json"));
         let previous: Option<Workspace> = read_file(&path, (2*MAX_BODY+2048) as u64)?;
-        let previous = previous.or_else(|| legacy.filter(|v| v.subject == subject).map(|v|Workspace {base:Some(v.clone()),working:v}));
+        let previous = previous.or_else(|| legacy.filter(|v| v.subject == subject).map(|v|Workspace {
+            base: Some(v.clone()), working: v, last_synced: None,
+        }));
+        let mut last_synced = previous.as_ref().and_then(|workspace| workspace.last_synced);
         if previous.as_ref().is_some_and(|w| w.working.subject != subject || w.base.as_ref().is_some_and(|b| b.subject != subject)) {
             return Err("Копия относится к другому аккаунту.".into());
         }
@@ -695,6 +702,7 @@ pub(crate) async fn load(
             if previous.is_none() { return Err("На устройстве нет сохранённого хранилища.".into()); }
             let mut vault = validate(&working)?;
             vault.remember_device(&device);
+            vault.last_synced = last_synced;
             let salt = &previous.as_ref().unwrap().working.vault.salt;
             vault.unlock_key = Some((salt.clone(),unlock.derive(&decode_hex::<16>(salt)?)?));
             let mut inner = app.inner.lock().unwrap();
@@ -901,18 +909,21 @@ pub(crate) async fn load(
                 }
                 upload(&oauth::client()?, VAULT_ENDPOINT, token, remote_revision, &sealed).await?;
                 base = Some(sealed.clone());
+                last_synced = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .ok().map(|elapsed| elapsed.as_secs());
             }
         }
         let mut inner = app.inner.lock().unwrap();
         if inner.oauth.cloud_subject().is_some_and(|id|id!=subject) || (sync && inner.oauth.cloud_subject().is_none()) { return Err("Аккаунт изменился.".into()); }
         let salt=saved.vault.salt.clone();
-        profiles::write_json(&path,&Workspace{base,working:saved},true).map_err(|e|e.to_string())?;
+        profiles::write_json(&path,&Workspace{base,working:saved,last_synced},true).map_err(|e|e.to_string())?;
         profiles::write_json(&marker,&subject,true).map_err(|e|e.to_string())?;
         if replace && remembered.as_ref()==Some(&subject) && edit["rememberDevice"]!=true {
             fs::remove_file(&remember_path).map_err(|e|e.to_string())?;
             crate::device_key::access(app,&subject,crate::device_key::Operation::Forget)?;
         }
         enroll(&salt)?;
+        vault.last_synced = last_synced;
         inner.cloud = Some(vault);
         inner.cloud_owner = Some(subject);
         Ok(())

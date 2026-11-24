@@ -256,6 +256,7 @@ impl App {
         let active_context = false;
         let (sync, keys) = {
             let mut sync = data.oauth.snapshot();
+            sync["loginBusy"] = sync["busy"].clone();
             sync["busy"] = json!(data.cloud_loading || sync["busy"] == true);
             sync["cached"] = json!(
                 self.profiles_path
@@ -268,6 +269,7 @@ impl App {
             );
             sync["remembered"] = json!(self.profiles_path.with_file_name("remembered-owner.json").is_file());
             sync["unlocked"] = json!(data.cloud.is_some());
+            sync["lastSynced"] = json!(data.cloud.as_ref().and_then(|vault| vault.last_synced));
             (
                 sync,
                 data.cloud

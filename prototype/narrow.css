@@ -38,11 +38,25 @@
 
 form label.check-field { display:flex; align-items:center; gap:8px; width:fit-content; }
 form label.check-field input[type=checkbox] { width:1rem; height:1rem; margin:0; flex:none; }
-.account-main { justify-self:start; }
-.account-options { margin:0; }
-.account-options summary { width:fit-content; padding:4px 0; color:var(--muted); font-weight:normal; }
-.account-options[open] .sync-actions { margin-top:8px; }
-#home-sync .sync-actions:has(> #sync-login[hidden]):has(> #sync-cancel[hidden]) { display:none; }
+.account-panel { max-width:48rem; padding:0; gap:0; }
+.account-row {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap;
+  min-height:60px; gap:8px 16px; padding:10px 16px;
+}
+.account-row + .account-row { border-top:1px solid var(--line); }
+.account-row > div { flex:1 1 150px; min-width:0; }
+.account-row h2 { font-size:13px; font-weight:650; }
+.account-row p, #account-recovery-status { margin-top:3px; color:var(--muted); font-size:12px; line-height:1.4; }
+.account-row p.error, #account-recovery-status.error { color:var(--red); }
+.account-row button { min-height:29px; max-width:100%; white-space:normal; text-align:left; }
+.account-recovery { max-width:48rem; margin-top:9px; }
+.account-recovery summary { width:fit-content; padding:6px 0; font-size:12px; color:var(--muted); }
+.account-recovery[open] .account-row { border:1px solid var(--line); border-radius:8px; }
+.account-recovery .account-row p { flex:1 1 200px; }
+@media (max-width:580px) {
+  .account-row { padding-inline:12px; }
+  .account-row button { min-height:34px; }
+}
 /* Workspace navigation and shared surfaces */
 :root { --panel:#141e29; --field:#0d151f; --line:#30404f; --muted:#a5b4c3; --accent:#78dfc5; }
 .appbar, footer { background:#101923; }
@@ -67,10 +81,9 @@ form label.check-field input[type=checkbox] { width:1rem; height:1rem; margin:0;
 .server-menu summary { color:#c3d2dd; padding:6px 8px; font-weight:500; }
 .server-menu-items { display:grid; gap:3px; padding-top:5px; }
 .server-menu-items button { text-align:left; }
-#home-sync .sync-card,#terminal-settings { max-width:34rem; padding:clamp(14px,2vw,22px); gap:15px; }
+#terminal-settings { max-width:34rem; padding:clamp(14px,2vw,22px); gap:15px; }
 #home-settings > button { align-self:flex-start; width:auto; margin-top:8px; }
 #terminal-settings .primary { justify-self:start; }
-#sync-account { font-size:1.05rem; font-weight:600; }
 #home-history .history,.key-row { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:6px; }
 .file-pane header,.file-toolbar { background:#16212c; }
 .file-pane h2,.mcp .heading h2 { font-weight:650; letter-spacing:-.02em; }

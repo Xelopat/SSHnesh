@@ -68,6 +68,33 @@
         <button id="cloud-lock" hidden>Заблокировать хранилище</button>
         <p id="sync-message" role="status" class="muted" hidden></p>
       </div>
+      <template id="native-account-template">
+        <div class="card account-panel">
+          <section class="account-row" aria-labelledby="account-profile-title">
+            <div><h2 id="account-profile-title">Профиль</h2><p id="account-profile-status" role="status"></p></div>
+            <button id="account-login" class="primary">Войти через xelopat.ru</button>
+            <button id="account-logout" hidden>Выйти</button>
+            <button id="account-cancel" hidden>Отменить вход</button>
+          </section>
+          <section class="account-row" aria-labelledby="account-vault-title">
+            <div><h2 id="account-vault-title">Хранилище</h2><p id="account-vault-status" role="status"></p></div>
+            <button id="account-unlock" hidden>Разблокировать</button>
+            <button id="account-lock" hidden>Заблокировать</button>
+          </section>
+          <section class="account-row" aria-labelledby="account-sync-title">
+            <div><h2 id="account-sync-title">Синхронизация</h2><p id="account-sync-status" role="status"></p></div>
+            <button id="account-sync" class="primary" disabled>Синхронизировать</button>
+          </section>
+        </div>
+        <details id="account-recovery" class="account-recovery" hidden>
+          <summary>Восстановление</summary>
+          <div class="account-row">
+            <p>Используйте замену, если прежнее облачное хранилище больше нельзя открыть.</p>
+            <button id="account-replace" class="danger">Заменить облачное хранилище…</button>
+          </div>
+          <p id="account-recovery-status" role="status" hidden></p>
+        </details>
+      </template>
     </section>
     <section id="home-settings" class="home-page" aria-labelledby="terminal-settings-title" hidden>
       <header class="heading"><h1 id="terminal-settings-title">Настройки</h1></header>
