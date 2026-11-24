@@ -53,8 +53,9 @@ function open(vault, key, owner, rev) {
 async function mergeVaults(base, local, remote, resolveConflict) {
   const asHosts = value => new Map(value.hosts.map(host => [host.id, { host, password: value.passwords[host.id] }]));
   const asKeys = value => new Map(Object.entries(value.keys));
-  const result = { hosts: [], keys: {}, passwords: {} };
-  for (const [kind, index] of [['host', asHosts], ['key', asKeys]]) {
+  const asAccounts = value => new Map((value.accounts ?? []).map(item => [item.id, { item, password: value.passwords[item.id] }]));
+  const result = { hosts: [], accounts: [], keys: {}, passwords: {} };
+  for (const [kind, index] of [['host', asHosts], ['account', asAccounts], ['key', asKeys]]) {
     const before = index(base);
     const here = index(local);
     const there = index(remote);
@@ -69,7 +70,9 @@ async function mergeVaults(base, local, remote, resolveConflict) {
         const summary = record => {
           if (!record) return null;
           if (kind === 'key') return [record.name, record.type].join(' · ');
+          if (kind === 'account') return record.item.label + ' · ' + record.item.username;
           const { label, group, username, host, port, auth } = record.host;
+          if (!username) return label + ' · ' + group + '\n' + host + ':' + port;
           return label + ' · ' + group + '\n' + username + '@' + host + ':' + port +
             ' · ' + ({ agent: 'SSH-агент', password: 'пароль', key: 'SSH-ключ' })[auth];
         };
@@ -80,7 +83,8 @@ async function mergeVaults(base, local, remote, resolveConflict) {
       if (!chosen) continue;
       if (kind === 'key') result.keys[id] = chosen;
       else {
-        result.hosts.push(chosen.host);
+        if (kind === 'host') result.hosts.push(chosen.host);
+        else result.accounts.push(chosen.item);
         if (chosen.password) result.passwords[id] = chosen.password;
       }
     }
@@ -88,15 +92,35 @@ async function mergeVaults(base, local, remote, resolveConflict) {
   return result;
 }
 
-async function authorize(openExternal, signal) {
+function callbackPage(res, connected) {
+  const title = connected ? 'Аккаунт подключён' : 'Не удалось подключить аккаунт';
+  const message = connected ? 'Эту вкладку можно закрыть.' : 'Начните вход заново в SSHnesh.';
+  const nonce = randomBytes(18).toString('base64');
+  return res.writeHead(connected ? 200 : 502, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'none'; style-src 'nonce-" + nonce + "'; frame-ancestors 'none'; base-uri 'none'",
+  }).end('<!doctype html><html lang="ru"><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + title + ' — SSHnesh</title>' +
+    '<style nonce="' + nonce + '">' +
+    'body{margin:0;min-height:100svh;display:grid;place-items:center;box-sizing:border-box;padding:24px;background:#151518;color:#efeff1;font:16px/1.5 system-ui,sans-serif}' +
+    'main{box-sizing:border-box;width:min(100%,430px);padding:clamp(24px,6vw,36px);background:#1e1e25;border:1px solid #333340;border-radius:8px;box-shadow:0 18px 40px #0004}' +
+    'strong{color:#f9c940}h1{font-size:26px;line-height:1.2;margin:20px 0 10px}p{margin:0;color:#9496a8}</style>' +
+    '<main><strong>SSHnesh</strong><h1>' + title + '</h1><p>' + message + '</p></main></html>');
+}
+
+async function authorize(openExternal, signal, exchange) {
   signal.throwIfAborted();
   const state = randomBytes(32).toString('hex');
   const verifier = randomBytes(32).toString('hex');
   const server = createServer();
   try {
-    const response = await new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.on('request', (req, res) => {
+      let accepted = false;
+      server.on('request', async (req, res) => {
         const origin = '127.0.0.1:' + server.address().port;
         const url = URL.parse(req.url, 'http://' + origin);
         if (!url) return res.writeHead(400).end();
@@ -109,8 +133,21 @@ async function authorize(openExternal, signal) {
           res.writeHead(400).end();
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store',
-          'Referrer-Policy': 'no-referrer' }).end('Вернитесь в SSHnesh, чтобы завершить вход.', () => resolve(code));
+        if (accepted) return res.writeHead(409).end();
+        accepted = true;
+        try {
+          const session = await exchange({ code, verifier });
+          signal.throwIfAborted();
+          if (res.destroyed) return resolve(session);
+          res.once('finish', () => resolve(session));
+          res.once('close', () => resolve(session));
+          callbackPage(res, true);
+        } catch (error) {
+          if (res.destroyed) return reject(error);
+          res.once('finish', () => reject(error));
+          res.once('close', () => reject(error));
+          callbackPage(res, false);
+        }
       });
       server.listen({ host: '127.0.0.1', port: 0, signal }, () => {
         const url = new URL(account);
@@ -119,7 +156,6 @@ async function authorize(openExternal, signal) {
       });
       server.once('close', () => reject(Error('Вход прерван.')));
     });
-    return { code: response, verifier };
   } finally { server.close(); server.closeAllConnections(); }
 }
 
@@ -174,8 +210,8 @@ class Sync {
       const cancel = new AbortController();
       const signal = AbortSignal.any([cancel.signal, this.signal, AbortSignal.timeout(180000)]);
       try {
-        const data = await authorize(this.openExternal, signal);
-        this.session = sessionSchema.parse(await this.request('session', { method: 'POST', data, authenticated: false }));
+        this.session = await authorize(this.openExternal, signal, async data =>
+          sessionSchema.parse(await this.request('session', { method: 'POST', data, authenticated: false })));
       } finally { cancel.abort(); }
     });
   }
@@ -207,17 +243,18 @@ class Sync {
       try {
         const downloaded = remote.vault && this.parseVault(open(remote.vault, key, owner, remote.revision));
         const previous = this.workspace.data;
-        const local = this.parseVault({ hosts: previous.servers.hosts, ...this.credentials.exportSync() });
+        const local = this.parseVault({ hosts: previous.servers.hosts, accounts: previous.servers.accounts, ...this.credentials.exportSync() });
         if (direction === 'pull') {
           const base = !knownRevision ? emptyVault : knownRevision === remote.revision ? downloaded :
             this.parseVault(open(checkpoint.vault, key, owner, knownRevision));
           const merged = await mergeVaults(base, local, downloaded, this.resolveConflict);
           if (!merged) return false;
           if (this.workspace.data !== previous) throw Error('Локальное хранилище изменилось. Повторите скачивание.');
-          const { hosts, ...secrets } = this.parseVault(merged);
+          const { hosts, accounts, ...secrets } = this.parseVault(merged);
           const vault = this.credentials.importSync(secrets, local);
           this.workspace.update(value => {
             value.servers.hosts = hosts;
+            value.servers.accounts = accounts ?? [];
             value.vault = vault;
             value.checkpoint = { subject: owner, revision: remote.revision, vault: remote.vault };
           });

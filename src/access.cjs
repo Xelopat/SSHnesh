@@ -26,7 +26,7 @@ class Access {
     Object.assign(this, { sessions, change, approvalMode });
   }
 
-  share(id, generation) {
+  share(id, generation, privileged = false, peer) {
     const session = this.sessions.items.get(id);
     if (!this.enabled || session?.generation !== generation || !this.sessions.writable(session))
       throw Error('Включите MCP и выберите действующее SSH-соединение.');
@@ -34,7 +34,7 @@ class Access {
     this.grant = {
       sessionId: id, generation: session.generation, grantId: randomUUID(), target: target(session.host),
       decoder: new StringDecoder('utf8'), output: '', offset: 0, cursor: 0,
-      seen: new Set(),
+      seen: new Set(), privileged, peer,
     };
     this.change();
   }
@@ -64,6 +64,7 @@ class Access {
   }
 
   closed(peer) {
+    if (peer && this.grant?.peer === peer) this.revoke(this.grant.sessionId);
     for (const request of this.requests.values())
       if (request.peer === peer) this.finish(request, 'cancelled');
   }
@@ -71,6 +72,7 @@ class Access {
   snapshot() {
     return {
       enabled: this.enabled, approvalMode: this.approvalMode, shared: this.binding(), history: this.history,
+      privileged: Boolean(this.grant?.privileged),
       pending: [...this.requests.values()].map(({ requestId, method, text, expiresAt, target, sessionId, generation }) =>
         ({ requestId, method, text, expiresAt, target, sessionId, generation })),
     };
@@ -80,7 +82,7 @@ class Access {
     if (method === 'status') return {
       enabled: this.enabled, shared: Boolean(this.grant), approvalMode: this.approvalMode, deadlineMs: ttl,
     };
-    if (method === 'sessions') return this.grant ? [this.binding()] : [];
+    if (method === 'sessions') return this.grant && (!this.grant.peer || this.grant.peer === peer) ? [this.binding()] : [];
     const parsed = schemas[method]?.safeParse(raw);
     if (!parsed?.success) throw Error('Некорректные аргументы запроса.');
     const args = parsed.data;
@@ -91,13 +93,14 @@ class Access {
       return this.finish(request, 'cancelled');
     }
     const grant = this.grant;
-    if (!this.enabled || !grant || ['sessionId', 'generation', 'grantId'].some(key => args[key] !== grant[key]))
+    if (!this.enabled || !grant || (grant.peer && grant.peer !== peer) ||
+        ['sessionId', 'generation', 'grantId'].some(key => args[key] !== grant[key]))
       throw Error('Разрешение отозвано или относится к другому соединению.');
     const remaining = args.expiresAt - Date.now();
     if (remaining > ttl) throw Error('Абсолютный срок должен быть в пределах 90 секунд.');
     if (grant.seen.has(args.requestId)) throw Error('Этот идентификатор уже использован.');
     if (grant.seen.size >= 2048) throw Error('Лимит запросов. Выдайте новое разрешение.');
-    const automatic = method === 'output' || this.approvalMode === 'all';
+    const automatic = method === 'output' || this.approvalMode === 'all' || grant.privileged;
     if (!automatic && this.requests.size >= 8) throw Error('Дождитесь решения по ожидающим запросам.');
     grant.seen.add(args.requestId);
 

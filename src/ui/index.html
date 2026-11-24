@@ -18,18 +18,29 @@
   <section id="home" class="home" aria-label="Главная">
     <nav id="home-nav" aria-label="Разделы главной">
       <button data-section="servers" aria-controls="home-servers" aria-current="page"><span aria-hidden="true">▤</span>Серверы</button>
+      <button data-section="accounts" aria-controls="home-accounts"><span aria-hidden="true">♙</span>Учётки</button>
       <button data-section="keys" aria-controls="home-keys"><span aria-hidden="true">⚿</span>Ключи</button>
       <button data-section="logs" aria-controls="home-logs"><span aria-hidden="true">◷</span>Журнал MCP</button>
       <button data-section="sync" aria-controls="home-sync"><span aria-hidden="true">↻</span>Синхронизация</button>
+      <button data-section="settings" aria-controls="home-settings" hidden><span aria-hidden="true">⚙</span>Настройки</button>
     </nav>
     <section id="home-servers" class="servers home-page" aria-labelledby="servers-title">
       <header class="heading"><h1 id="servers-title">Серверы</h1><button id="add" class="primary">+ Добавить сервер</button></header>
       <div class="search"><input id="search" type="search" aria-label="Поиск серверов" placeholder="Найти сервер или группу"></div>
       <div id="hosts"></div>
     </section>
+    <section id="home-accounts" class="home-page" aria-labelledby="accounts-title" hidden>
+      <header class="heading"><h1 id="accounts-title">Учётки</h1><button id="add-account" class="primary">+ Добавить учётку</button></header>
+      <div id="account-list"></div>
+    </section>
     <section id="home-keys" class="home-page" aria-labelledby="keys-title" hidden>
-      <header class="heading"><h1 id="keys-title">Ключи</h1><button id="import-key" class="primary">+ Импортировать ключ</button></header>
-      <p class="muted">Ключи хранятся зашифрованными. Ключ с парольной фразой разблокируется при первом использовании после запуска.</p>
+      <header class="heading"><h1 id="keys-title">Ключи</h1><div class="actions">
+        <button id="import-key">+ Импортировать ключ</button>
+        <button id="generate-key" class="primary">+ Создать ключ</button>
+      </div></header>
+      <p class="muted" id="keys-local-hint">Ключи хранятся зашифрованными. Ключ с парольной фразой разблокируется при первом использовании после запуска.</p>
+      <p class="muted" id="keys-cloud-hint" hidden>Скачанные ключи можно выбрать при подключении к серверу. Закрытая часть ключа не показывается.</p>
+      <button id="keys-cloud-open" hidden>Открыть облачное хранилище</button>
       <div id="key-list"></div>
     </section>
     <section id="home-logs" class="home-page" aria-labelledby="logs-title" hidden>
@@ -42,6 +53,7 @@
         <p id="sync-account" role="status">Войдите в аккаунт xelopat.ru.</p>
         <div class="sync-actions">
           <button id="sync-login" class="primary">Войти через xelopat.ru</button>
+          <button id="sync-cancel" hidden>Отменить вход</button>
           <button id="sync-logout" hidden>Выйти</button>
         </div>
         <form id="sync-form" hidden>
@@ -50,10 +62,21 @@
           <div class="sync-actions">
             <button type="submit" value="pull" class="primary">Скачать с сервера</button>
             <button type="submit" value="push">Сохранить на сервере</button>
+            <button type="submit" value="unlock" id="cloud-unlock" hidden>Открыть сохранённую копию</button>
           </div>
         </form>
+        <button id="cloud-lock" hidden>Заблокировать хранилище</button>
         <p id="sync-message" role="status" class="muted" hidden></p>
       </div>
+    </section>
+    <section id="home-settings" class="home-page" aria-labelledby="terminal-settings-title" hidden>
+      <header class="heading"><h1 id="terminal-settings-title">Настройки</h1></header>
+      <form id="terminal-settings" class="card sync-card">
+        <label>Размер шрифта терминала<input name="fontSize" type="number" min="10" max="30" required></label>
+        <label>История терминала (строк)<input name="scrollback" type="number" min="100" max="10000" required></label>
+        <label class="check-field"><input name="cursorBlink" type="checkbox"> Мигающий курсор</label>
+        <button class="primary" type="submit">Сохранить настройки</button>
+      </form>
     </section>
   </section>
   <section id="files" class="files" aria-label="Файлы SFTP" hidden>
@@ -101,6 +124,8 @@
           <option value="all">Отправлять автоматически</option>
         </select>
         <p id="mcp-approval-info" class="muted">Для переданной сессии новый вывод всегда доступен клиенту MCP без подтверждения.</p>
+        <label class="check-field"><input id="mcp-chat-approval" type="checkbox"> Принимать подтверждения доступа из MCP-клиента</label>
+        <p class="muted">Включайте для MCP-клиента, которому доверяете показывать запросы на подтверждение.</p>
       </section>
       <section><h3>История действий</h3><div id="history"></div></section>
     </div>
@@ -108,19 +133,39 @@
 </main>
 <footer><span id="foot-ssh">SSH · Нет подключения</span><span id="foot-mcp">MCP · Выключен</span><span id="foot-term">xterm-256color · UTF-8</span></footer>
 <div id="notice" role="status" hidden></div>
+<dialog id="key-dialog" aria-labelledby="key-title">
+  <form id="key-form">
+    <header class="heading"><h2 id="key-title">Создать SSH-ключ</h2></header>
+    <label>Название<input id="key-name" required maxlength="120" autocomplete="off" autofocus></label>
+    <label id="key-comment-label" hidden>Комментарий<input id="key-comment" maxlength="256"></label>
+    <p class="muted" id="key-create-hint">SSHnesh создаст пару Ed25519 и зашифрует приватный ключ в системном хранилище.</p>
+    <p id="key-error" class="error" role="alert" hidden></p>
+    <div class="actions"><button id="cancel-key" type="button">Отмена</button><button id="save-key" type="submit" class="primary">Создать</button></div>
+  </form>
+</dialog>
+<dialog id="connect-dialog" aria-labelledby="connect-title">
+  <form id="connect-form">
+    <header class="heading"><h2 id="connect-title">Подключение</h2></header>
+    <label>Учётка<select id="connect-account"></select></label>
+    <div class="actions"><button id="cancel-connect" type="button">Отмена</button><button type="submit" class="primary">Подключить</button></div>
+  </form>
+</dialog>
 <dialog id="host-dialog">
   <form id="host-form">
     <header class="heading"><h2 id="host-title">Добавить сервер</h2><button type="button" class="icon" id="close-dialog" aria-label="Закрыть">×</button></header>
     <label>Название<input name="label" required maxlength="64" autocomplete="off"></label>
-    <label>Группа<input name="group" required maxlength="48" value="Мои серверы" list="groups"><datalist id="groups"></datalist></label>
-    <div class="form-row"><label>Адрес<input name="host" required maxlength="253" placeholder="ssh.example.org" autocomplete="off"></label>
+    <label id="host-group-field">Группа<input name="group" required maxlength="48" value="Мои серверы" list="groups"><datalist id="groups"></datalist></label>
+    <div class="form-row" id="host-address-fields"><label>Адрес<input name="host" required maxlength="253" placeholder="ssh.example.org" autocomplete="off"></label>
     <label>Порт<input name="port" required type="number" min="1" max="65535" value="22"></label></div>
-    <label>Пользователь<input name="username" required maxlength="64" autocomplete="off"></label>
-    <label>Способ входа<select name="auth" id="host-auth"><option value="agent">Системный SSH-агент</option><option value="password">Пароль</option><option value="key">Ключ из хранилища</option></select></label>
+    <label id="host-account-field">Учётка по умолчанию<select name="accountId" id="host-account"></select></label>
+    <label id="host-user-field">Пользователь<input name="username" required maxlength="64" autocomplete="off"></label>
+    <label id="host-auth-field">Способ входа<select name="auth" id="host-auth"><option value="agent">Системный SSH-агент</option><option value="password">Пароль</option><option value="key">Ключ из хранилища</option></select></label>
+    <label id="sudo-field"><span><input type="checkbox" id="account-sudo"> У пользователя есть sudo</span></label>
     <label id="host-key-field" hidden>Ключ<select name="keyId" id="host-key-select" disabled></select></label>
     <p id="host-auth-info" class="muted"></p>
     <div id="form-error" class="error" role="alert"></div>
     <div class="actions"><button type="button" class="danger" id="delete-host" hidden>Удалить сервер</button><button type="button" id="forget-password" hidden>Убрать пароль</button><button type="submit" id="save-password" hidden>Сменить пароль…</button><button type="submit" id="save-host" class="primary">Сохранить</button></div>
+    <button type="button" id="migrate-account" hidden>Перенести вход в отдельную учётку</button>
   </form>
 </dialog>
 </body>

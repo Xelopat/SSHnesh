@@ -18,6 +18,21 @@ function fixture(approvalMode) {
   return { access, session, sessions, args, writes };
 }
 
+test('privileged approval belongs to the requesting peer and ends when that peer disconnects', async () => {
+  const { access, session, writes } = fixture('manual');
+  access.share(session.id, session.generation, true, 'owner');
+  const { target, ...binding } = access.binding();
+  const input = text => ({ ...binding, requestId: randomUUID(), expiresAt: Date.now() + 5000, text });
+  assert.deepEqual(access.call('other', 'sessions'), []);
+  assert.throws(() => access.call('other', 'send', input('pwd')), /отозвано/);
+  assert.equal((await access.call('owner', 'send', input('pwd'))).status, 'sent');
+  assert.equal((await access.call('owner', 'send', input('whoami'))).status, 'sent');
+  access.closed('owner');
+  assert.equal(access.binding(), null);
+  assert.throws(() => access.call('owner', 'send', input('ls')), /отозвано/);
+  assert.deepEqual(writes, ['pwd\r', 'whoami\r']);
+});
+
 test('cancel, deny, duplicate and stale approval never write', async () => {
   const { access, args, writes } = fixture();
   const a = { ...args(), text: 'echo cancel' };

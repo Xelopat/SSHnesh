@@ -113,10 +113,11 @@ async function main() {
   const homeNav = page.getByRole('navigation', { name: 'Разделы главной' });
   assert.equal(await homeNav.getByRole('button', { name: 'Известные хосты' }).count(), 0);
   await homeNav.getByRole('button', { name: 'Ключи' }).click();
-  await page.getByText('Импортируйте файл приватного SSH-ключа.').waitFor();
+  await page.getByText('Создайте SSH-ключ или импортируйте существующий.').waitFor();
   await homeNav.getByRole('button', { name: 'Серверы' }).click();
   await action('+ Добавить сервер').click();
   const form = page.locator('#host-form');
+  await form.locator('#host-account').selectOption('legacy');
   await form.getByLabel('Название').fill('Тестовый сервер');
   await form.getByLabel('Группа').fill('Лаборатория');
   await form.getByLabel('Адрес').fill('127.0.0.1');
@@ -205,7 +206,7 @@ async function main() {
   transport = new StdioClientTransport({ ...config, stderr: 'pipe' });
   mcp = new Client({ name: 'sshash-e2e', version: '1.0.0' });
   await mcp.connect(transport);
-  assert.equal((await mcp.listTools()).tools.length, 5);
+  assert.equal((await mcp.listTools()).tools.length, 7);
   const call = async (name, args = {}, options) => {
     const response = await mcp.callTool({ name, arguments: args }, undefined, options);
     if (response.isError) throw Error(response.content[0].text);
@@ -417,6 +418,7 @@ async function main() {
     username: host.username, auth: 'key', keyId: keys[0].id });
   await homeNav.getByRole('button', { name: 'Серверы' }).click();
   await action('+ Добавить сервер').click();
+  await form.locator('#host-account').selectOption('legacy');
   await form.getByLabel('Название').fill('Парольный сервер');
   await form.getByLabel('Группа').fill('Лаборатория');
   await form.getByLabel('Адрес').fill('127.0.0.1');

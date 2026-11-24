@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const { generateKeyPairSync, randomBytes } = require('node:crypto');
+const { createHash, generateKeyPairSync, randomBytes } = require('node:crypto');
 const { createServer } = require('node:net');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
@@ -59,6 +59,39 @@ test('central login, encrypted push and pull, three-way merge, conflicts and acc
     const server = await start(join(root, 'server/public'));
     const site = await start(accountRoot);
     const fetchApi = (url, options) => fetch(server + new URL(url).pathname, options);
+    const mobile = site + '/sshnesh-login.php';
+    const mobileVerifier = randomBytes(32).toString('hex');
+    const mobileState = randomBytes(32).toString('hex');
+    const mobileParams = new URLSearchParams({ mode: 'android', state: mobileState,
+      challenge: createHash('sha256').update(mobileVerifier).digest('hex') });
+    const mobileUser = { 'X-Test-User': firstId };
+    const mobileAnonymous = await fetch(mobile + '?' + mobileParams, { redirect: 'manual' });
+    assert.equal(mobileAnonymous.status, 303);
+    assert.match(decodeURIComponent(mobileAnonymous.headers.get('location')), /mode=android/);
+    assert.equal((await fetch(mobile + '?' + mobileParams + '&port=12345', { headers: mobileUser })).status, 400);
+    assert.equal((await fetch(mobile, { method: 'POST', headers: mobileUser, body: mobileParams })).status, 403);
+    mobileParams.set('csrf', 'test-csrf');
+    mobileParams.set('redirect_uri', 'https://example.test/incorrect');
+    const mobileDone = await fetch(mobile, { method: 'POST', headers: mobileUser, body: mobileParams });
+    assert.equal(mobileDone.status, 200);
+    const mobileHtml = await mobileDone.text();
+    assert.match(mobileHtml, /Открыть SSHnesh/);
+    assert.doesNotMatch(mobileHtml, /example\.test/);
+    const link = new URL(/href="(ru\.xelopat\.sshnesh\.preview:\/\/auth\/callback\?[^"]+)"/.exec(mobileHtml)[1].replaceAll('&amp;', '&'));
+    assert.equal(link.searchParams.get('state'), mobileState);
+    assert.deepEqual([...link.searchParams.keys()].sort(), ['code', 'state']);
+    const mobileCode = link.searchParams.get('code');
+    const redeem = verifier => fetch(server + '/session.php', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: mobileCode, verifier }) });
+    assert.equal((await redeem('0'.repeat(64))).status, 401);
+    const mobileSession = await redeem(mobileVerifier);
+    assert.equal(mobileSession.status, 200);
+    const mobileAccount = await mobileSession.json();
+    assert.equal(mobileAccount.subject, firstId);
+    assert.equal((await redeem(mobileVerifier)).status, 401);
+    assert.equal((await fetch(server + '/session.php', { method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + mobileAccount.token } })).status, 200);
+
     async function browser(url, owner) {
       const query = new URL(url).search;
       const callback = site + '/sshnesh-login.php' + query;
@@ -73,7 +106,8 @@ test('central login, encrypted push and pull, three-way merge, conflicts and acc
       body.set('csrf', 'test-csrf');
       const done = await fetch(callback, { method: 'POST', headers, body });
       assert.equal(done.status, 200);
-      assert.match(await done.text(), /SSHnesh/);
+      assert.match(done.headers.get('content-type'), /^text\/html/);
+      assert.match(await done.text(), /Аккаунт подключён/);
     }
 
     const makeDevice = (owner = firstId, initial = [], choices = []) => {

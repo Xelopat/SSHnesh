@@ -116,6 +116,7 @@ footer span:first-child { max-width:50%; overflow:hidden; text-overflow:ellipsis
 footer span:last-child { margin-left:auto; }
 dialog { width:min(430px,95vw); background:#151e28; color:inherit; border:1px solid #465466; border-radius:9px; padding:14px; }
 dialog::backdrop { background:#03070bb8; }
+.check-field input, #account-sudo { width:auto; }
 form { display:grid; gap:12px; }
 form .heading { padding:0; }
 form label { display:grid; gap:5px; color:#cbd7e3; font-size:13px; }

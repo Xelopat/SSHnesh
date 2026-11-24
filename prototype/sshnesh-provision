@@ -1,0 +1,57 @@
+#!/bin/sh
+# Install root:root 0755 on an opted-in Linux host. See README.
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+[ "$(id -u)" -eq 0 ] || exit 1
+[ "$#" -ge 2 ] || exit 2
+action=$1 user=$2
+case "$user" in ''|root|[!a-z]*|*[!a-z0-9_-]*) exit 2;; esac
+[ "${#user}" -le 32 ] || exit 2
+base=/var/lib/sshnesh-provision
+install -d -m 0700 -o root -g root "$base"
+exec 9>"$base/.lock"
+flock -x 9
+case "$action" in
+  create)
+    [ "$#" -eq 2 ] || exit 2
+    if getent passwd "$user" >/dev/null || [ -e "$base/$user" ] || [ -e "/home/$user" ] || [ -L "/home/$user" ]; then
+      echo "Account or home already exists." >&2
+      exit 1
+    fi
+    useradd --create-home --user-group --home-dir "/home/$user" --shell /bin/sh -- "$user"
+    id -u "$user" >"$base/$user"
+    printf 'Created %s\n' "$user"
+    ;;
+  key)
+    [ "$#" -eq 3 ] || exit 2
+    blob=$3
+    case "$blob" in ''|*[!A-Za-z0-9+/]*) exit 2;; esac
+    [ "${#blob}" -eq 68 ] || exit 2
+    [ -f "$base/$user" ] && [ "$(cat "$base/$user")" = "$(id -u "$user")" ] || {
+      echo "Only accounts created by SSHnesh can receive a key." >&2; exit 1;
+    }
+    record=$(getent passwd "$user")
+    [ "$(printf '%s\n' "$record" | cut -d: -f6)" = "/home/$user" ] || exit 1
+    [ "$(id -Gn "$user")" = "$user" ] || {
+      echo "This account has been granted other groups. Refusing key changes." >&2; exit 1;
+    }
+    key="ssh-ed25519 $blob"
+    printf '%s\n' "$key" | ssh-keygen -lf - >/dev/null
+    # No writes to user-controlled paths as root.
+    runuser -u "$user" -- /bin/sh -eu -c '
+      umask 077
+      cd "$1"
+      [ ! -L .ssh ] && [ ! -L .ssh/authorized_keys ] || exit 1
+      mkdir -p .ssh
+      if [ -e .ssh/authorized_keys ]; then
+        [ -f .ssh/authorized_keys ] || exit 1
+        grep -Fxq -- "$2" .ssh/authorized_keys && exit 0
+      fi
+      printf "\n%s\n" "$2" >> .ssh/authorized_keys
+    ' sshnesh "/home/$user" "$key"
+    printf 'Installed public key for %s\n' "$user"
+    ;;
+  *) exit 2;;
+esac

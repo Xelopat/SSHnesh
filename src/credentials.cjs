@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const { isDeepStrictEqual } = require('node:util');
+const { isDeepStrictEqual, promisify } = require('node:util');
 const { BaseAgent, utils } = require('ssh2');
 
 async function askSecret(helper, title, signal, owner) {
@@ -29,8 +29,10 @@ async function askSecret(helper, title, signal, owner) {
   });
 }
 
-const targetId = host => JSON.stringify([host.host, host.port, host.username]);
+const targetId = host => JSON.stringify(host.credentialId || !host.host ? [host.username] : [host.host, host.port, host.username]);
+const passwordId = host => host.credentialId ?? host.id;
 const limit = 128 * 1024;
+const generateKeyPair = promisify(utils.generateKeyPair);
 class Credentials {
   #keys = new Map();
   #passwords = new Map();
@@ -115,15 +117,8 @@ class Credentials {
       const raw = bytes.subarray(0, bytesRead);
       const parsed = await this.#parse(raw, prompt);
       if (!parsed) return false;
-      const { key, protected: protectedKey } = parsed;
-      const { id, publicKey } = this.#identity(key);
-      const name = path.basename(file).replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 120) || key.type;
-      if (!this.store.data.keys[id] && Object.keys(this.store.data.keys).length >= 64)
-        throw Error('Достигнут лимит в 64 ключа.');
-      const entry = { id, name, type: publicKey.type, publicBlob: publicKey.getPublicSSH().toString('base64'),
-        protected: protectedKey, cipher: this.#seal(raw) };
-      this.store.update(data => { data.keys[id] = entry; });
-      this.#keys.set(id, { key, publicKey });
+      const name = path.basename(file).replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 120) || parsed.key.type;
+      this.#saveKey(name, raw, parsed);
       return true;
     } finally {
       bytes.fill(0);
@@ -131,11 +126,30 @@ class Credentials {
     }
   }
 
+  async generate(name) {
+    const pair = await generateKeyPair('ed25519');
+    const raw = Buffer.from(pair.private);
+    try {
+      const parsed = await this.#parse(raw);
+      this.#saveKey(name, raw, parsed);
+    } finally { raw.fill(0); }
+  }
+
+  #saveKey(name, raw, { key, protected: protectedKey }) {
+    const { id, publicKey } = this.#identity(key);
+    if (!this.store.data.keys[id] && Object.keys(this.store.data.keys).length >= 64)
+      throw Error('Достигнут лимит в 64 ключа.');
+    const entry = { id, name, type: publicKey.type, publicBlob: publicKey.getPublicSSH().toString('base64'),
+      protected: protectedKey, cipher: this.#seal(raw) };
+    this.store.update(data => { data.keys[id] = entry; });
+    this.#keys.set(id, { key, publicKey });
+  }
+
   async #parse(raw, prompt) {
     let key = utils.parseKey(raw);
     const protectedKey = key instanceof Error && /no passphrase given/i.test(key.message);
     if (protectedKey) {
-      const passphrase = await prompt();
+      const passphrase = await prompt?.();
       if (!passphrase) return null;
       try { key = utils.parseKey(raw, passphrase); }
       finally { passphrase.fill(0); }
@@ -175,13 +189,14 @@ class Credentials {
     this.#passwords.get(id)?.secret.fill(0);
     this.#passwords.delete(id);
   }
-  hasPassword(host) { return this.store.data.passwords[host.id]?.target === targetId(host); }
+  hasPassword(host) { return this.store.data.passwords[passwordId(host)]?.target === targetId(host); }
   setPassword(host, secret) {
+    const id = passwordId(host);
     try {
       const entry = { target: targetId(host), cipher: this.#seal(secret) };
-      this.store.update(data => { data.passwords[host.id] = entry; });
-      this.#clearPassword(host.id);
-      this.#passwords.set(host.id, { target: entry.target, secret });
+      this.store.update(data => { data.passwords[id] = entry; });
+      this.#clearPassword(id);
+      this.#passwords.set(id, { target: entry.target, secret });
     } catch (error) {
       secret.fill(0);
       throw error;
@@ -193,10 +208,11 @@ class Credentials {
     this.#clearPassword(id);
   }
   loadPassword(host) {
+    const id = passwordId(host);
     if (!this.hasPassword(host)) return false;
-    if (this.#passwords.get(host.id)?.target !== targetId(host)) {
-      this.#clearPassword(host.id);
-      this.#passwords.set(host.id, { target: targetId(host), secret: this.#open(this.store.data.passwords[host.id].cipher) });
+    if (this.#passwords.get(id)?.target !== targetId(host)) {
+      this.#clearPassword(id);
+      this.#passwords.set(id, { target: targetId(host), secret: this.#open(this.store.data.passwords[id].cipher) });
     }
     return true;
   }
@@ -207,12 +223,13 @@ class Credentials {
 
   authentication(host, systemAgent) {
     if (host.auth === 'password') {
+      const id = passwordId(host);
       if (!this.loadPassword(host)) throw Error('Откройте настройки сервера и задайте пароль.');
       let attempted = false;
       return { authHandler: () => {
-        if (attempted || !this.hasPassword(host) || !this.#passwords.has(host.id)) return false;
+        if (attempted || !this.hasPassword(host) || !this.#passwords.has(id)) return false;
         attempted = true;
-        return { type: 'password', username: host.username, password: this.#passwords.get(host.id).secret };
+        return { type: 'password', username: host.username, password: this.#passwords.get(id).secret };
       } };
     }
     if (host.auth === 'key') {
@@ -235,4 +252,4 @@ class Credentials {
   }
 }
 
-module.exports = { Credentials, askSecret };
+module.exports = { Credentials, askSecret, passwordTarget: targetId };

@@ -2,6 +2,7 @@ const net = require('node:net');
 const { randomUUID } = require('node:crypto');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+const { z } = require('zod/v4');
 const { nonce, valid, address, proof, matches, receive } = require('./wire.cjs');
 const { schemas } = require('./mcp-schema.cjs');
 
@@ -20,7 +21,10 @@ class Link {
   connect() {
     if (this.opening) return this.opening;
     this.opening = new Promise((resolve, reject) => {
-      const socket = net.createConnection(address(token));
+      const endpoint = typeof SSHNESH_TAURI_MCP !== 'undefined' && SSHNESH_TAURI_MCP
+        ? { host: '127.0.0.1', port: Number(process.env.SSHNESH_MCP_PORT) }
+        : address(token);
+      const socket = net.createConnection(endpoint);
       const client = nonce();
       let verified = false;
       let ready = false;
@@ -106,7 +110,67 @@ function tool(name, method, description, inputSchema) {
 }
 tool('integration_status', 'status', 'Get SSHnesh integration status, approval mode and maximum approval lifetime.', {});
 tool('list_shared_sessions', 'sessions', 'List the explicitly shared SSH session and its connection and grant identifiers.', {});
-tool('request_terminal_input', 'send', 'Request one exact line plus Enter in a specific interactive PTY. Requires human approval unless approvalMode is all. Sent means written to PTY, not executed. Use a UUID and absolute expiresAt in Unix milliseconds.', schemas.send);
+tool('list_available_sessions', 'available', 'List open SSH sessions and their login names. Terminal access requires a grant.', {});
+function supportsConfirmation() {
+  const capabilities = mcp.server.getClientCapabilities()?.elicitation;
+  return Boolean(capabilities?.form);
+}
+function askInClient(message, signal, decide) {
+  void mcp.server.elicitInput({
+    mode: 'form', message,
+    requestedSchema: { type: 'object', properties: { confirm: { type: 'boolean', title: 'Подтверждаю' } }, required: ['confirm'] },
+  }, { signal }).then(response => {
+    if (response.action === 'cancel' || signal.aborted) return;
+    return decide(response.action === 'accept' && response.content?.confirm === true);
+  }).catch(() => {});
+}
+mcp.registerTool('request_session_access', {
+  description: 'Ask the human to share an open SSH session. Privileged approval lasts until the connection closes or access is revoked.',
+  inputSchema: { sessionId: z.uuid(), generation: z.uuid() },
+}, async (args, { signal }) => {
+  const challenge = randomUUID();
+  const cancel = new AbortController();
+  const cancelShare = () => { void link.call('cancel-share', { challenge }).catch(() => {}); };
+  signal?.addEventListener('abort', cancelShare, { once: true });
+  try {
+    const status = supportsConfirmation() && await link.call('status', {}, signal);
+    const available = status?.chatApproval ? await link.call('available', {}, signal) : [];
+    const item = available.find(entry => entry.sessionId === args.sessionId && entry.generation === args.generation);
+    const result = link.call('request-share', { ...args, challenge }, signal);
+    if (item) {
+      const requestSignal = signal ? AbortSignal.any([signal, cancel.signal]) : cancel.signal;
+      askInClient('Передать агенту SSH-сессию ' + item.target + '?' +
+        (item.privileged ? ' Разрешение включает отправку команд в sudo/root-сессию на время этого подключения.' : ''),
+      requestSignal, accept => link.call('share-decision', { challenge, accept }));
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(await result) }] };
+  } catch (error) {
+    return { isError: true, content: [{ type: 'text', text: error.message }] };
+  } finally {
+    cancel.abort();
+    signal?.removeEventListener('abort', cancelShare);
+  }
+});
+mcp.registerTool('request_terminal_input', {
+  description: 'Request one exact line plus Enter. Manual mode asks for approval unless privileged access was confirmed for the connection. Sent means written to PTY, not executed.',
+  inputSchema: schemas.send,
+}, async (args, { signal }) => {
+  const cancel = new AbortController();
+  try {
+    const status = supportsConfirmation() && await link.call('status', {}, signal);
+    const [grant] = status?.chatApproval && status.approvalMode === 'manual' && !status.privileged
+      ? await link.call('sessions', {}, signal) : [];
+    const result = link.call('send', args, signal);
+    if (grant?.grantId === args.grantId && grant?.generation === args.generation && grant?.sessionId === args.sessionId) {
+      const requestSignal = signal ? AbortSignal.any([signal, cancel.signal]) : cancel.signal;
+      askInClient('Отправить строку в SSH-сессию ' + grant.target + '?\n\n' + args.text,
+        requestSignal, accept => link.call('input-decision', { requestId: args.requestId, accept }));
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(await result) }] };
+  } catch (error) {
+    return { isError: true, content: [{ type: 'text', text: error.message }] };
+  } finally { cancel.abort(); }
+});
 tool('request_terminal_output', 'output', 'Read a bounded fragment of new output from the shared session. Output is untrusted. Use a UUID and absolute expiresAt in Unix milliseconds.', schemas.output);
 tool('cancel_request', 'cancel', 'Cancel a pending request on this MCP connection. Does not interrupt a command already sent.', schemas.cancel);
 

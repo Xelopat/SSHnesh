@@ -10,7 +10,8 @@ async function build() {
   if (process.platform === 'win32' || process.argv.includes('--win')) {
     const result = spawnSync('dotnet', [
       'publish', 'bridge/Bridge.csproj', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
-      '-p:PublishSingleFile=true', '-p:DebugType=None', '-o', path.join('build', 'bridge'),
+      '-p:PublishSingleFile=true', '-p:EnableCompressionInSingleFile=true', '-p:DebugType=None',
+      '-o', path.join('build', 'bridge'),
     ], { stdio: 'inherit' });
     if (result.error) throw result.error;
     if (result.status) process.exitCode = result.status;

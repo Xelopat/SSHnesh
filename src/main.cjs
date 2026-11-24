@@ -31,7 +31,12 @@ const profile = z.strictObject({
   port: z.int().min(1).max(65535), username: z.string().trim().regex(/^[a-zA-Z0-9_.@-]{1,64}$/),
   auth: z.enum(['agent', 'password', 'key']).default('agent'),
   keyId: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
+  sudo: z.boolean().optional(),
 });
+const server = profile.pick({ id: true, label: true, group: true, host: true, port: true })
+  .extend({ accountId: z.uuid().optional() });
+const account = profile.pick({ id: true, label: true, username: true, auth: true, keyId: true, sudo: true });
+const hostProfile = z.union([server, profile]);
 
 function storage(file, initial, parse) {
   let data;
@@ -88,33 +93,35 @@ if (primary) app.whenReady().then(() => {
 
   const userData = app.getPath('userData');
   fs.mkdirSync(userData, { recursive: true, mode: 0o700 });
-  const hosts = z.array(profile.extend({ id: z.uuid() })).max(256);
-  const serverSchema = z.object({ hosts, hostKeys: z.record(z.string(), z.string()) });
+  const hosts = z.array(z.union([server.extend({ id: z.uuid() }), profile.extend({ id: z.uuid() })])).max(256);
+  const accounts = z.array(account.extend({ id: z.uuid() })).max(256);
+  const serverSchema = z.object({ hosts, accounts: accounts.default([]), hostKeys: z.record(z.string(), z.string()) });
   const approvalMode = z.enum(['manual', 'all']);
-  const settingsSchema = z.object({ approvalMode: approvalMode.default(defaultApprovalMode) });
+  const settingsSchema = z.object({ approvalMode: approvalMode.default(defaultApprovalMode), chatApproval: z.boolean().default(false) });
   const settings = storage(path.join(userData, 'settings.json'), settingsSchema.parse({}),
     data => settingsSchema.parse(data));
   const keyIdSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
   const privateKey = z.object({ id: keyIdSchema, name: z.string().max(120), type: z.string(),
-    publicBlob: z.base64(), protected: z.boolean() });
+    comment: z.string().optional(), publicBlob: z.base64(), protected: z.boolean() });
   const passwordEntry = z.object({ target: z.string() });
   const keyMap = entry => z.record(keyIdSchema, entry).refine(items => Object.keys(items).length <= 64);
-  const passwordMap = entry => z.record(z.uuid(), entry).refine(items => Object.keys(items).length <= 256);
+  const passwordMap = entry => z.record(z.uuid(), entry).refine(items => Object.keys(items).length <= 512);
   const cipher = z.string().min(1);
   const vaultSchema = z.object({
     keys: keyMap(privateKey.extend({ cipher })),
     passwords: passwordMap(passwordEntry.extend({ cipher })),
   });
   const portableSchema = z.strictObject({
-    hosts, keys: keyMap(privateKey.extend({ secret: z.base64().min(4).max(174764) })),
+    hosts, accounts: accounts.default([]), keys: keyMap(privateKey.extend({ secret: z.base64().min(4).max(174764) })),
     passwords: passwordMap(passwordEntry.extend({ secret: z.base64().min(4).max(21848) })),
   }).refine(data => new Set(data.hosts.map(host => host.id)).size === data.hosts.length &&
+    new Set([...data.hosts, ...data.accounts].map(item => item.id)).size === data.hosts.length + data.accounts.length &&
     Object.entries(data.keys).every(([id, key]) => id === key.id) &&
-    Object.entries(data.passwords).every(([id, entry]) => data.hosts.some(host =>
-      host.id === id && host.auth === 'password' && entry.target === JSON.stringify([host.host, host.port, host.username]))));
+    Object.entries(data.passwords).every(([id, entry]) => [...data.hosts, ...data.accounts].some(item =>
+      item.id === id && item.auth === 'password' && entry.target === credentialsApi.passwordTarget(item))));
   const workspaceSchema = z.object({ servers: serverSchema, vault: vaultSchema, checkpoint: checkpointSchema.optional() });
   const workspace = storage(path.join(userData, 'workspace.json'), () => ({
-    servers: storage(path.join(userData, 'servers.json'), { hosts: [], hostKeys: {} }, serverSchema.parse).data,
+    servers: storage(path.join(userData, 'servers.json'), { hosts: [], accounts: [], hostKeys: {} }, serverSchema.parse).data,
     vault: storage(path.join(userData, 'credentials.json'), { keys: {}, passwords: {} }, vaultSchema.parse).data,
   }), workspaceSchema.parse);
   const localStore = field => ({
@@ -138,7 +145,7 @@ if (primary) app.whenReady().then(() => {
     openExternal: url => shell.openExternal(url),
     resolveConflict: async ({ kind, local, remote }) => {
       const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Синхронизация',
-        message: kind === 'host' ? 'Конфликт в настройках сервера' : 'Конфликт SSH-ключа',
+        message: { host: 'Конфликт в настройках сервера', account: 'Конфликт учёток', key: 'Конфликт SSH-ключа' }[kind],
         detail: 'На устройстве: ' + (local ?? 'удалено') + '\nНа сервере синхронизации: ' + (remote ?? 'удалено'),
         buttons: ['Отмена', 'Выбрать локальную', 'Выбрать облачную'], defaultId: 0, cancelId: 0 });
       return [null, 'local', 'remote'][answer.response];
@@ -163,6 +170,12 @@ if (primary) app.whenReady().then(() => {
 
   let clientCount = 0;
   let localError = '';
+  let sharePrompt;
+  function cancelSharePrompt() {
+    if (!sharePrompt) return;
+    sharePrompt.accepted = false;
+    sharePrompt.cancel.abort();
+  }
   const agentAddress = () => testLaunch && process.env.SSHASH_TEST_AGENT
     ? process.env.SSHASH_TEST_AGENT
     : process.platform === 'win32' ? '//./pipe/openssh-ssh-agent' : process.env.SSH_AUTH_SOCK;
@@ -179,21 +192,61 @@ if (primary) app.whenReady().then(() => {
   function snapshot() {
     return {
       hosts: store.data.hosts.map(host => ({ ...host, hasPassword: credentials.hasPassword(host) })),
-      keys: credentials.list(), sessions: sessions.snapshot(), mcp: access.snapshot(), sync: sync.snapshot(),
+      accounts: store.data.accounts.map(item => ({ ...item, hasPassword: credentials.hasPassword(item) })),
+      keys: credentials.list(), sessions: sessions.snapshot(), mcp: { ...access.snapshot(), chatApproval: settings.data.chatApproval }, sync: sync.snapshot(),
       clientCount, localError, persistent,
     };
   }
   function publish() {
+    const grant = access.grant;
+    const shared = grant && sessions.items.get(grant.sessionId);
+    if (shared && !grant.privileged && needsPrivilegeApproval(shared.host)) access.revoke(shared.id);
     if (window && !window.isDestroyed()) window.webContents.send('state:changed', snapshot());
   }
   stopLocal = startLocal({
     token, helper: bridge,
-    onCall: (peer, method, args) => access.call(peer, method, args),
-    onClose: peer => access.closed(peer),
+    onCall: (peer, method, args) => {
+      if (method === 'available') return access.enabled ? [...sessions.items.values()].filter(item => sessions.writable(item))
+        .map(({ id, generation, host }) => ({ sessionId: id, generation, target: target(host), account: host.accountLabel,
+          privileged: needsPrivilegeApproval(host) })) : [];
+      if (method === 'request-share') {
+        const { sessionId, generation, challenge } = z.strictObject({
+          sessionId: z.uuid(), generation: z.uuid(), challenge: z.uuid().optional(),
+        }).parse(args);
+        return shareSession(sessionId, generation, peer, challenge);
+      }
+      if (method === 'share-decision') {
+        const decision = z.strictObject({ challenge: z.uuid(), accept: z.boolean() }).parse(args);
+        if (settings.data.chatApproval && sharePrompt?.peer === peer && sharePrompt.challenge === decision.challenge &&
+            !sharePrompt.signal.aborted) {
+          sharePrompt.accepted = decision.accept;
+          sharePrompt.cancel.abort();
+        }
+        return { status: 'received' };
+      }
+      if (method === 'cancel-share') {
+        if (sharePrompt?.peer === peer && sharePrompt.challenge === args?.challenge) cancelSharePrompt();
+        return { status: 'received' };
+      }
+      if (method === 'input-decision') {
+        const { requestId, accept } = z.strictObject({ requestId: z.uuid(), accept: z.boolean() }).parse(args);
+        if (settings.data.chatApproval && access.requests.get(requestId)?.peer === peer)
+          return access.decide(requestId, accept);
+        return { status: 'not_pending' };
+      }
+      if (method === 'status') return { ...access.call(peer, method, args), chatApproval: settings.data.chatApproval,
+        privileged: Boolean(access.grant?.privileged) };
+      return access.call(peer, method, args);
+    },
+    onClose: peer => {
+      access.closed(peer);
+      if (sharePrompt?.peer === peer) cancelSharePrompt();
+    },
     onCount: count => { clientCount = count; publish(); },
     onError: error => {
       localError = error.message;
       access.enabled = false;
+      cancelSharePrompt();
       if (access.grant) access.revoke(access.grant.sessionId);
       publish();
     },
@@ -214,7 +267,32 @@ if (primary) app.whenReady().then(() => {
   route('sync:logout', () => sync.logout());
   route('sync:transfer', (direction, password) => sync.transfer(direction, password));
   const findHost = id => store.data.hosts.find(item => item.id === id);
+  const findAccount = id => store.data.accounts.find(item => item.id === id);
+  route('host:migrate-account', id => {
+    const old = findHost(id);
+    if (!old?.username) throw Error('На сервере уже используется отдельная учётка.');
+    const { username, auth, keyId, sudo, ...host } = old;
+    const item = { id: randomUUID(), label: (username + ' · ' + host.label).slice(0, 64), username, auth, keyId, sudo };
+    const previous = vault.data;
+    workspace.update(data => {
+      if (data.servers.accounts.length >= 256) throw Error('Достигнут лимит учёток.');
+      data.servers.accounts.push(item);
+      data.servers.hosts[data.servers.hosts.findIndex(entry => entry.id === id)] = { ...host, accountId: item.id };
+      const saved = data.vault.passwords[id];
+      if (saved?.target === credentialsApi.passwordTarget(old))
+        data.vault.passwords[item.id] = { cipher: saved.cipher, target: credentialsApi.passwordTarget(item) };
+      delete data.vault.passwords[id];
+    });
+    credentials.refreshAfterSync(previous);
+    publish();
+  });
   const keyId = id => z.string().regex(/^[A-Za-z0-9_-]{43}$/).parse(id);
+  route('key:generate', async label => {
+    const name = z.string().trim().min(1).max(120).refine(text => !/[\p{Cc}\p{Cf}]/u.test(text)).safeParse(label);
+    if (!name.success) throw Error('Укажите название ключа от 1 до 120 символов.');
+    await credentials.generate(name.data);
+    publish();
+  });
   route('key:import', async () => {
     const result = await dialog.showOpenDialog(window, { title: 'Импортировать приватный SSH-ключ', properties: ['openFile'] });
     if (result.canceled || !result.filePaths[0]) return;
@@ -222,19 +300,26 @@ if (primary) app.whenReady().then(() => {
   });
   route('key:remove', id => { credentials.remove(keyId(id)); publish(); });
   route('key:copy-public', id => clipboard.writeText(credentials.publicKey(keyId(id))));
-  route('host:password', async id => {
-    const host = findHost(id);
-    if (!host || host.auth !== 'password') throw Error('Сначала выберите вход по паролю и сохраните сервер.');
-    const secret = await ask('Пароль · ' + target(host));
+  async function setPassword(find, id) {
+    const item = find(id);
+    if (item?.auth !== 'password') throw Error('Сначала сохраните настройки входа по паролю.');
+    const secret = await ask('Пароль · ' + (item.host ? target(item) : item.label + ' · ' + item.username));
     if (!secret) return false;
-    const current = findHost(id);
-    if (!current || current.auth !== 'password' || target(current) !== target(host)) {
+    const current = find(id);
+    if (!current || current.auth !== 'password' || credentialsApi.passwordTarget(current) !== credentialsApi.passwordTarget(item)) {
       secret.fill(0);
       throw Error('Настройки сервера изменились. Повторите ввод.');
     }
     credentials.setPassword(current, secret);
     publish();
     return true;
+  }
+  route('host:password', id => setPassword(findHost, id));
+  route('account:password', id => setPassword(findAccount, id));
+  route('account:clear-password', id => {
+    if (!findAccount(id)) throw Error('Учётка удалена.');
+    credentials.removePassword(id);
+    publish();
   });
   route('host:clear-password', id => {
     if (!findHost(id)) throw Error('Сервер удалён.');
@@ -242,10 +327,11 @@ if (primary) app.whenReady().then(() => {
     publish();
   });
   route('host:save', raw => {
-    const value = profile.parse(raw);
+    const value = hostProfile.parse(raw);
     const host = { ...value, id: value.id ?? randomUUID() };
     if (host.auth !== 'key') delete host.keyId;
     if (host.auth === 'key' && !host.keyId) throw Error('Выберите SSH-ключ.');
+    if (host.accountId && !findAccount(host.accountId)) throw Error('Выберите сохранённую учётку.');
     const old = findHost(host.id);
     if (old && (target(old) !== target(host) || host.auth !== 'password')) credentials.removePassword(host.id);
     store.update(data => {
@@ -259,29 +345,69 @@ if (primary) app.whenReady().then(() => {
     publish();
     return host.id;
   });
+  route('account:save', raw => {
+    const value = account.parse(raw);
+    const item = { ...value, id: value.id ?? randomUUID() };
+    if (item.auth !== 'key') delete item.keyId;
+    if (item.auth === 'key' && !item.keyId) throw Error('Выберите SSH-ключ.');
+    const old = findAccount(item.id);
+    if (old && (old.username !== item.username || item.auth !== 'password')) credentials.removePassword(item.id);
+    store.update(data => {
+      const index = data.accounts.findIndex(entry => entry.id === item.id);
+      if (index >= 0) data.accounts[index] = item;
+      else {
+        if (data.accounts.length >= 256) throw Error('Достигнут лимит учёток.');
+        data.accounts.push(item);
+      }
+    });
+    if (old && !old.sudo && item.sudo)
+      for (const active of sessions.items.values()) if (active.host.credentialId === item.id) access.revoke(active.id);
+    publish();
+    return item.id;
+  });
+  route('account:delete', id => {
+    if (!findAccount(id)) return;
+    if (store.data.hosts.some(host => host.accountId === id)) throw Error('Сначала выберите другую учётку в настройках серверов, где она используется по умолчанию.');
+    credentials.removePassword(id);
+    store.update(data => { data.accounts = data.accounts.filter(item => item.id !== id); });
+    publish();
+  });
   route('host:delete', id => {
     if (!findHost(id)) return;
     credentials.removePassword(id);
     store.update(data => { data.hosts = data.hosts.filter(host => host.id !== id); });
     publish();
   });
-  async function connect(hostId, sessionId) {
+  function connectionProfile(hostId, accountId) {
     const host = findHost(hostId);
+    if (!host) return null;
+    const selectedId = accountId ?? host.accountId;
+    if (!selectedId) {
+      if (!host.username) throw Error('Выберите учётку для подключения.');
+      return host;
+    }
+    const item = findAccount(selectedId);
+    if (!item) return null;
+    const { username, auth, keyId, sudo } = item;
+    return { ...host, username, auth, keyId, sudo, credentialId: item.id, accountLabel: item.label };
+  }
+  async function connect(hostId, accountId, sessionId) {
+    const host = connectionProfile(hostId, accountId);
     if (!host) throw Error('Сервер удалён.');
     if (host.auth === 'key') {
       if (!await credentials.unlock(host.keyId, () => ask('Парольная фраза SSH-ключа'))) return null;
-      const current = findHost(hostId);
+      const current = connectionProfile(hostId, accountId);
       if (!current || target(host) !== target(current) || current.auth !== host.auth || current.keyId !== host.keyId)
         throw Error('Настройки сервера изменились. Подключитесь заново.');
       if (sessionId && !sessions.items.has(sessionId)) return null;
     }
     return sessions.connect(host, sessionId);
   }
-  route('ssh:connect', id => connect(id));
+  route('ssh:connect', (id, accountId) => connect(id, accountId));
   route('ssh:reconnect', id => {
     const old = sessions.items.get(id);
     if (!old) throw Error('Вкладка закрыта.');
-    return connect(old.host.id, id);
+    return connect(old.host.id, old.host.credentialId, id);
   });
   route('ssh:disconnect', id => sessions.disconnect(id));
   route('ssh:remove', id => sessions.remove(id));
@@ -291,10 +417,48 @@ if (primary) app.whenReady().then(() => {
   route('mcp:enable', value => {
     if (value === true && localError) throw Error(localError);
     access.enabled = value === true;
+    if (!access.enabled) cancelSharePrompt();
     if (!access.enabled && access.grant) access.revoke(access.grant.sessionId);
     publish();
   });
-  route('mcp:share', (id, generation) => access.share(id, generation));
+  function needsPrivilegeApproval(host) {
+    return host.username.toLowerCase() === 'root' ||
+      Boolean(host.sudo || (host.credentialId ? findAccount(host.credentialId)?.sudo : findHost(host.id)?.sudo));
+  }
+  async function shareSession(id, generation, peer, challenge) {
+    const item = sessions.items.get(id);
+    if (!access.enabled || item?.generation !== generation || !sessions.writable(item))
+      throw Error('Включите MCP и выберите открытое SSH-соединение.');
+    if (access.grant?.sessionId === id && access.grant.generation === generation &&
+        (!peer || !access.grant.peer || access.grant.peer === peer))
+      return { status: 'shared', ...access.binding() };
+    if (sharePrompt) throw Error('Сначала завершите ожидающее подтверждение.');
+    const privileged = needsPrivilegeApproval(item.host);
+    if (privileged || peer) {
+      const cancel = new AbortController();
+      const signal = AbortSignal.any([cancel.signal, shutdown.signal, AbortSignal.timeout(85000)]);
+      const prompt = { peer, cancel, challenge, signal, accepted: false };
+      sharePrompt = prompt;
+      try {
+        const answer = await dialog.showMessageBox(window, {
+          type: privileged ? 'warning' : 'question', title: 'Доступ MCP',
+          message: (privileged ? 'Разрешить агенту доступ к sudo/root на эту SSH-сессию?' : 'Передать агенту SSH-сессию?'),
+          detail: target(item.host) + (privileged ? '\nАгент сможет отправлять команды до отключения или отзыва доступа.' : ''),
+          buttons: ['Отмена', 'Разрешить'], defaultId: 0, cancelId: 0, signal,
+        });
+        if (!prompt.accepted && (answer.response !== 1 || signal.aborted)) return { status: 'denied' };
+      } finally { sharePrompt = undefined; }
+    }
+    if (privileged !== needsPrivilegeApproval(item.host)) throw Error('Права учётки изменились. Запросите доступ заново.');
+    access.share(id, generation, privileged, privileged ? peer : undefined);
+    return { status: 'shared', ...access.binding() };
+  }
+  route('mcp:share', (id, generation) => shareSession(id, generation));
+  route('mcp:chat-approval', value => {
+    const enabled = z.boolean().parse(value);
+    settings.update(data => { data.chatApproval = enabled; });
+    publish();
+  });
   route('mcp:approval-mode', value => {
     const mode = approvalMode.parse(value);
     if (settings.data.approvalMode === mode) return;
@@ -302,7 +466,7 @@ if (primary) app.whenReady().then(() => {
     access.approvalMode = mode;
     publish();
   });
-  route('mcp:revoke', () => { if (access.grant) access.revoke(access.grant.sessionId); });
+  route('mcp:revoke', () => { cancelSharePrompt(); if (access.grant) access.revoke(access.grant.sessionId); });
   route('mcp:decide', (...args) => access.decide(...args));
   fileRoutes(route, sessions, () => window);
   route('mcp:config', () => {

@@ -14,10 +14,11 @@ extraResources:
   - from: build/sshash-mcp.cjs
     to: sshash-mcp.cjs
 win:
+  icon: assets/sshnesh-terminal-dark.ico
   target:
     - target: zip
       arch: x64
-  signAndEditExecutable: false
+  signExecutable: false
   extraResources:
     - from: build/bridge/sshash-pipe.exe
       to: bridge/sshash-pipe.exe

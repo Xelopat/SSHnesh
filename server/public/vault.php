@@ -14,6 +14,15 @@ if ($method === 'GET') {
     $query = $db->prepare('SELECT revision, envelope FROM vaults WHERE subject = ?');
     $query->execute([$subject]);
     $row = $query->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+        $v = json_decode($row['envelope'], true, 12, JSON_THROW_ON_ERROR);
+        $tag = '"' . (int)$row['revision'] . '-' . hash('sha256', $v['salt'] . $v['iv'] . $v['tag'] . $v['body']) . '"';
+        header('ETag: ' . $tag);
+        if (($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $tag) {
+            http_response_code(304);
+            exit;
+        }
+    }
     reply(200, $row ? [
         'revision' => (int)$row['revision'],
         'vault' => json_decode($row['envelope'], true, 12, JSON_THROW_ON_ERROR),
